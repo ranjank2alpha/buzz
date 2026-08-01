@@ -19,12 +19,9 @@ import {
   requestDesktopNotificationAccess,
   sendDesktopNotification,
 } from "./lib/desktop";
-import {
-  playNotificationSound,
-  resolveSlotSound,
-  slotForFeedKind,
-} from "./lib/sound";
+import { playNotificationSound, resolveSlotSound, slotForFeedKind } from "./lib/sound";
 import type { NotificationSettings } from "./hooks";
+import { getConversationNotificationConfig } from "./lib/conversationNotifications";
 
 const HOME_FEED_SEEN_STORAGE_KEY = "buzz-home-feed-seen.v1";
 const HOME_FEED_SEEN_MAX_ITEMS = 500;
@@ -77,6 +74,7 @@ export function useFeedDesktopNotifications(
   profiles?: UserProfileLookup,
   mutedChannelIds?: ReadonlySet<string>,
   channels: readonly NotificationChannel[] = [],
+  activeTargetId?: string | null,
 ) {
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
   const seenItemIdsRef = React.useRef<Set<string>>(
@@ -111,22 +109,36 @@ export function useFeedDesktopNotifications(
   const deliverFeedNotification = React.useEffectEvent(
     async (item: FeedItem, senderName?: string) => {
       const threadRootId = getThreadReference(item.tags).rootId ?? null;
-      const didSend = await sendDesktopNotification({
-        body: notificationBody(item),
-        target: {
-          channelId: item.channelId,
-          channelName: item.channelName,
-          content: item.content,
-          createdAt: item.createdAt,
-          eventId: item.id,
-          kind: item.kind,
-          pubkey: item.pubkey,
-          threadRootId,
-        },
-        title: notificationTitle(item, senderName),
-      });
+      const targetId = item.channelId || threadRootId || item.pubkey;
+      const convConfig = getConversationNotificationConfig(targetId);
 
-      if (didSend) {
+      const isWindowFocused = typeof document !== "undefined" && document.hasFocus();
+      const isViewingActiveTarget =
+        isWindowFocused &&
+        !settings.notifyWhileViewing &&
+        targetId !== null &&
+        targetId !== undefined &&
+        activeTargetId === targetId;
+
+      let didSend = false;
+      if (!isViewingActiveTarget && convConfig.toastEnabled) {
+        didSend = await sendDesktopNotification({
+          body: notificationBody(item),
+          target: {
+            channelId: item.channelId,
+            channelName: item.channelName,
+            content: item.content,
+            createdAt: item.createdAt,
+            eventId: item.id,
+            kind: item.kind,
+            pubkey: item.pubkey,
+            threadRootId,
+          },
+          title: notificationTitle(item, senderName),
+        });
+      }
+
+      if (convConfig.soundEnabled && (didSend || !isViewingActiveTarget)) {
         const slot = slotForFeedKind(item.kind, item.category);
         playNotificationSound(resolveSlotSound(settings, slot));
       }

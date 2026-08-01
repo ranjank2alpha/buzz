@@ -13,7 +13,13 @@ import {
   StarOff,
   Trash2,
   TriangleAlert,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
+import {
+  getConversationNotificationConfig,
+  setConversationNotificationConfig,
+} from "@/features/notifications/lib/conversationNotifications";
 
 import { useAppShell } from "@/app/AppShellContext";
 import {
@@ -37,6 +43,65 @@ import {
   ContextMenuSubContent,
   ContextMenuSubTrigger,
 } from "@/shared/ui/context-menu";
+
+function NotificationPreferencesSubmenu({ targetId }: { targetId: string }) {
+  const [config, setConfig] = React.useState(() =>
+    getConversationNotificationConfig(targetId),
+  );
+
+  const toggleToast = () => {
+    const updated = setConversationNotificationConfig(targetId, {
+      toastEnabled: !config.toastEnabled,
+    });
+    setConfig(updated);
+  };
+
+  const toggleSound = () => {
+    const updated = setConversationNotificationConfig(targetId, {
+      soundEnabled: !config.soundEnabled,
+    });
+    setConfig(updated);
+  };
+
+  return (
+    <ContextMenuSub>
+      <ContextMenuSubTrigger>
+        <ContextMenuIconSlot>
+          <Bell className="h-4 w-4" />
+        </ContextMenuIconSlot>
+        <span>Notifications</span>
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent className="w-52">
+        <ContextMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleToast();
+          }}
+        >
+          <ContextMenuIconSlot>
+            {config.toastEnabled ? <Check className="h-4 w-4" /> : null}
+          </ContextMenuIconSlot>
+          <span>OS Toast Alerts</span>
+        </ContextMenuItem>
+        <ContextMenuItem
+          onSelect={(e) => {
+            e.preventDefault();
+            toggleSound();
+          }}
+        >
+          <ContextMenuIconSlot>
+            {config.soundEnabled ? (
+              <Volume2 className="h-4 w-4" />
+            ) : (
+              <VolumeX className="h-4 w-4 text-muted-foreground" />
+            )}
+          </ContextMenuIconSlot>
+          <span>Sound Alerts</span>
+        </ContextMenuItem>
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
 
 function MoveToSectionSubmenu({
   channelId,
@@ -276,6 +341,7 @@ export function ChannelContextMenuItems({
         </ContextMenuItem>
       ) : null}
       {showMuteToggle || showStar ? <ContextMenuSeparator /> : null}
+      <NotificationPreferencesSubmenu targetId={channel.id} />
       {showMuteToggle ? (
         isMuted ? (
           <ContextMenuItem
