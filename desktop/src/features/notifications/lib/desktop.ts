@@ -1,11 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { UserAttentionType, getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  isPermissionGranted,
-  onAction,
-  requestPermission,
-} from "@tauri-apps/plugin-notification";
+import { onAction } from "@tauri-apps/plugin-notification";
 import { isLinuxPlatform, isMacPlatform } from "@/shared/lib/platform";
 
 // Backend event emitted when the user clicks a native (Linux) notification.
@@ -121,38 +117,56 @@ function dispatchDesktopNotificationTarget(target: DesktopNotificationTarget) {
 }
 
 export async function getDesktopNotificationPermissionState(): Promise<DesktopNotificationPermissionState> {
+  if (isTauri()) {
+    try {
+      const isGranted = await invoke<boolean>(
+        "plugin:notification|is_permission_granted",
+      );
+      return isGranted ? "granted" : "default";
+    } catch {
+      return "default";
+    }
+  }
+
   if (!hasNotificationApi()) {
     return "unsupported";
   }
 
-  if (window.Notification.permission !== "default") {
-    return window.Notification.permission;
-  }
-
-  if (!isTauri()) {
-    return "default";
-  }
-
-  try {
-    return (await isPermissionGranted()) ? "granted" : "default";
-  } catch {
-    return "default";
-  }
+  return window.Notification.permission;
 }
 
 let pendingPermissionRequest: Promise<DesktopNotificationPermissionState> | null =
   null;
 
 export async function requestDesktopNotificationAccess(): Promise<DesktopNotificationPermissionState> {
-  if (!hasNotificationApi()) {
-    return "unsupported";
-  }
-
   if (pendingPermissionRequest) {
     return pendingPermissionRequest;
   }
 
-  pendingPermissionRequest = requestPermission().finally(() => {
+  pendingPermissionRequest = (async (): Promise<DesktopNotificationPermissionState> => {
+    if (isTauri()) {
+      try {
+        const res = await invoke<string>(
+          "plugin:notification|request_permission",
+        );
+        return res === "granted" || res === "denied" || res === "default"
+          ? (res as DesktopNotificationPermissionState)
+          : "granted";
+      } catch {
+        return "denied";
+      }
+    }
+
+    if (!hasNotificationApi()) {
+      return "unsupported";
+    }
+
+    try {
+      return await window.Notification.requestPermission();
+    } catch {
+      return "denied";
+    }
+  })().finally(() => {
     pendingPermissionRequest = null;
   });
 
@@ -310,6 +324,25 @@ export async function sendDesktopNotification(
     }
   }
 
+  if (isTauri()) {
+    try {
+      await invoke("plugin:notification|notify", {
+        options: {
+          title: payload.title,
+          body: payload.body,
+          extra: notificationExtra(payload.target),
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  if (!hasNotificationApi()) {
+    return false;
+  }
+
   const notification = new window.Notification(payload.title, {
     body: payload.body,
     silent: true,
@@ -317,7 +350,7 @@ export async function sendDesktopNotification(
   } as DesktopNotificationOptions);
 
   const target = payload.target;
-  if (!isTauri() && target) {
+  if (target) {
     notification.onclick = () => {
       dispatchDesktopNotificationTarget(target);
       notification.close();
