@@ -907,7 +907,7 @@ pub fn run() {
     let run_shutdown_done = Arc::clone(&shutdown_done);
     let restart_requested = Arc::new(AtomicBool::new(false));
     app.run(move |app_handle, event| match event {
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => show_main_window(app_handle),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         RunEvent::WindowEvent {
