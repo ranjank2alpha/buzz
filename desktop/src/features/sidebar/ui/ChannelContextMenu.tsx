@@ -16,6 +16,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
+import { useState } from "react";
 import {
   getConversationNotificationConfig,
   setConversationNotificationConfig,
@@ -45,7 +46,7 @@ import {
 } from "@/shared/ui/context-menu";
 
 function NotificationPreferencesSubmenu({ targetId }: { targetId: string }) {
-  const [config, setConfig] = React.useState(() =>
+  const [config, setConfig] = useState(() =>
     getConversationNotificationConfig(targetId),
   );
 

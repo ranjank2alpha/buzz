@@ -19,7 +19,11 @@ import {
   requestDesktopNotificationAccess,
   sendDesktopNotification,
 } from "./lib/desktop";
-import { playNotificationSound, resolveSlotSound, slotForFeedKind } from "./lib/sound";
+import {
+  playNotificationSound,
+  resolveSlotSound,
+  slotForFeedKind,
+} from "./lib/sound";
 import type { NotificationSettings } from "./hooks";
 import { getConversationNotificationConfig } from "./lib/conversationNotifications";
 
@@ -112,7 +116,8 @@ export function useFeedDesktopNotifications(
       const targetId = item.channelId || threadRootId || item.pubkey;
       const convConfig = getConversationNotificationConfig(targetId);
 
-      const isWindowFocused = typeof document !== "undefined" && document.hasFocus();
+      const isWindowFocused =
+        typeof document !== "undefined" && document.hasFocus();
       const isViewingActiveTarget =
         isWindowFocused &&
         !settings.notifyWhileViewing &&
