@@ -137,7 +137,10 @@ test("sendDesktopNotification invokes notify plugin command in Tauri mode when g
 
     assert.equal(sent, true);
     assert.equal(invokedCalls.length, 2);
-    assert.equal(invokedCalls[0].cmd, "plugin:notification|is_permission_granted");
+    assert.equal(
+      invokedCalls[0].cmd,
+      "plugin:notification|is_permission_granted",
+    );
     assert.equal(invokedCalls[1].cmd, "plugin:notification|notify");
     assert.deepEqual(invokedCalls[1].args, {
       options: {

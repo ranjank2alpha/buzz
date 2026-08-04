@@ -143,32 +143,33 @@ export async function requestDesktopNotificationAccess(): Promise<DesktopNotific
     return pendingPermissionRequest;
   }
 
-  pendingPermissionRequest = (async (): Promise<DesktopNotificationPermissionState> => {
-    if (isTauri()) {
+  pendingPermissionRequest =
+    (async (): Promise<DesktopNotificationPermissionState> => {
+      if (isTauri()) {
+        try {
+          const res = await invoke<string>(
+            "plugin:notification|request_permission",
+          );
+          return res === "granted" || res === "denied" || res === "default"
+            ? (res as DesktopNotificationPermissionState)
+            : "granted";
+        } catch {
+          return "denied";
+        }
+      }
+
+      if (!hasNotificationApi()) {
+        return "unsupported";
+      }
+
       try {
-        const res = await invoke<string>(
-          "plugin:notification|request_permission",
-        );
-        return res === "granted" || res === "denied" || res === "default"
-          ? (res as DesktopNotificationPermissionState)
-          : "granted";
+        return await window.Notification.requestPermission();
       } catch {
         return "denied";
       }
-    }
-
-    if (!hasNotificationApi()) {
-      return "unsupported";
-    }
-
-    try {
-      return await window.Notification.requestPermission();
-    } catch {
-      return "denied";
-    }
-  })().finally(() => {
-    pendingPermissionRequest = null;
-  });
+    })().finally(() => {
+      pendingPermissionRequest = null;
+    });
 
   return pendingPermissionRequest;
 }

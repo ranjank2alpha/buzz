@@ -55,6 +55,7 @@ export function NostrKeyImportForm({
   const [passphrase, setPassphrase] = React.useState("");
   const [isImporting, setIsImporting] = React.useState(false);
   const [importError, setImportError] = React.useState<string | null>(null);
+  const [isDragging, setIsDragging] = React.useState(false);
   const [isGoogleSigningIn, setIsGoogleSigningIn] = React.useState(false);
 
   const handleGoogleSignIn = React.useCallback(async () => {
@@ -64,9 +65,7 @@ export function NostrKeyImportForm({
       const res = await startGoogleWorkspaceLogin();
       await onImport(res.nsec);
     } catch (error) {
-      setImportError(
-        error instanceof Error ? error.message : String(error),
-      );
+      setImportError(error instanceof Error ? error.message : String(error));
     } finally {
       setIsGoogleSigningIn(false);
     }
@@ -229,7 +228,7 @@ export function NostrKeyImportForm({
             {isGoogleSigningIn ? (
               <Spinner className="h-5 w-5" />
             ) : (
-              <svg className="h-5 w-5" viewBox="0 0 24 24">
+              <svg aria-hidden="true" className="h-5 w-5" viewBox="0 0 24 24">
                 <path
                   d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
                   fill="#4285F4"
