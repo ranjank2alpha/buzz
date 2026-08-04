@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 pub struct IdentityInfo {
     pub pubkey: String,
     pub display_name: String,

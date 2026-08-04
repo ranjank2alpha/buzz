@@ -19,7 +19,7 @@ const ALLOWED_DOMAIN: &str = "k2alpha.ai";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const GOOGLE_COMPANY_SALT: &[u8] = b"buzz_k2alpha_company_salt_v1";
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GoogleAuthResult {
     pub identity: IdentityInfo,
