@@ -4,7 +4,6 @@ import { Check, Eye, EyeOff, KeyRound } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
 import { nsecToNpub } from "@/shared/lib/nostrUtils";
 import {
-import {
   classifyKeyImportInput,
   isPlausibleNcryptsec,
   keyImportSubmitEnabled,
