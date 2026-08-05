@@ -307,6 +307,10 @@ pub fn run() {
         .manage(terminal_runtime::TerminalSessions::default())
         .setup(move |app| {
             let app_handle = app.handle().clone();
+
+            #[cfg(windows)]
+            let _ = app.set_app_user_model_id("xyz.block.buzz.app");
+
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             tray_menu::init(&app_handle)?;
 

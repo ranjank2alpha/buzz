@@ -8,6 +8,7 @@ import {
   importIdentity,
   persistCurrentIdentity,
 } from "@/shared/api/tauriIdentity";
+import { startGoogleWorkspaceLogin } from "@/shared/api/googleAuth";
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -128,6 +129,24 @@ export function MachineOnboardingFlow({
     }
   }, [queryClient]);
 
+  const handleGoogleSignIn = React.useCallback(async () => {
+    setIsPending(true);
+    setError(null);
+    try {
+      const res = await startGoogleWorkspaceLogin();
+      const identity = res.identity;
+      queryClient.setQueryData(["identity"], identity);
+      continueWithIdentity(identity.pubkey);
+      setIdentityWasImported(true);
+      setSelectedPubkey(identity.pubkey);
+      setPage("setup");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setIsPending(false);
+    }
+  }, [continueWithIdentity, queryClient]);
+
   const replaceLostIdentity = React.useCallback(async () => {
     const confirmed = window.confirm(
       "This will create a new identity and abandon your previous key. This cannot be undone. Continue?",
@@ -226,18 +245,18 @@ export function MachineOnboardingFlow({
               {error ? (
                 <p className="mt-4 text-sm text-destructive">{error}</p>
               ) : null}
-              <div className="mt-10 flex flex-col items-center gap-3">
+              <div className="mt-10 flex w-full flex-col items-center gap-3">
                 <Button
                   className={ONBOARDING_LANDING_CTA_CLASS}
                   disabled={isPending}
-                  onClick={() => void loadFreshIdentity()}
+                  onClick={() => void handleGoogleSignIn()}
                   type="button"
                 >
                   {isPending
-                    ? "Loading identity…"
+                    ? "Signing in..."
                     : selectedPubkey
                       ? "Continue setup"
-                      : "Create a new identity key"}
+                      : "Sign in with Google (@k2alpha.ai)"}
                 </Button>
                 <Button
                   className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
@@ -251,7 +270,7 @@ export function MachineOnboardingFlow({
                 >
                   {selectedPubkey
                     ? "Use a different key instead"
-                    : "Use an existing key"}
+                    : "Or import manually"}
                 </Button>
               </div>
               <IdentityKeyHelpDialog />

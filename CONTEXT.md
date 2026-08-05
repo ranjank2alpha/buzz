@@ -16,6 +16,8 @@
 * **Desktop Text Sizing**: Use rem-based tokens (`text-base`, `text-xs`, `text-2xs`, `text-3xs`) instead of explicit `px` to maintain webview zoom compatibility.
 * **Hermit Environment**: Run commands via `bin/` toolchain wrappers or activate environment before running workspace tools.
 * **Format & Lint Gating**: `npx biome check .` and `tsc` must pass before desktop release.
+* **Windows Notifications**: For Tauri v2 notifications to appear in Windows OS Notification settings, explicitly call `app.set_app_user_model_id("xyz.block.buzz.app")` in the Tauri setup hook, and the app must be formally installed (shortcut created) via the generated NSIS installer.
+* **Google SSO Flow**: Ensure Google Auth (`start_google_workspace_login`) handles UI state and error reporting seamlessly to bypass manual key import flows when using SSO.
 
 ## Pending Tasks
-* All desktop linting, unit tests, and production build checks are passing on `dev`.
+* None. Recent issues (login loop, redundant welcome screen, missing Windows notifications) are resolved.
