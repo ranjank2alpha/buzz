@@ -379,6 +379,7 @@ export function useHomeFeedNotificationState(
   getMessageReadAt: (messageId: string) => number | null = () => null,
   channels: ReadonlyArray<Pick<Channel, "id" | "name" | "channelType">> = [],
   silentChannelIds?: ReadonlySet<string>,
+  activeTargetId?: string | null,
 ) {
   useFeedDesktopNotifications(
     feed,
@@ -390,6 +391,7 @@ export function useHomeFeedNotificationState(
     mutedChannelIds,
     channels,
     silentChannelIds,
+    activeTargetId,
   );
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
   const [seenFeedIds, setSeenFeedIds] = React.useState<string[]>(() =>

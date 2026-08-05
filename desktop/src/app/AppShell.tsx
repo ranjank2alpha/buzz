@@ -440,6 +440,7 @@ export function AppShell() {
       getMessageReadAt,
       channels,
       huddleBackingChannelIds,
+      activeChannel?.id ?? null,
     );
   const dueReminderBadge = useDueReminderBadgeCount(
     identityQuery.data?.pubkey,
