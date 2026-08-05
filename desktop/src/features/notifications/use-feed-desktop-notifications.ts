@@ -79,8 +79,8 @@ export function useFeedDesktopNotifications(
   profiles?: UserProfileLookup,
   mutedChannelIds?: ReadonlySet<string>,
   channels: readonly NotificationChannel[] = [],
-  activeTargetId?: string | null,
   silentChannelIds?: ReadonlySet<string>,
+  activeTargetId?: string | null,
 ) {
   const normalizedPubkey = pubkey?.trim().toLowerCase() ?? "";
   const seenItemIdsRef = React.useRef<Set<string>>(
