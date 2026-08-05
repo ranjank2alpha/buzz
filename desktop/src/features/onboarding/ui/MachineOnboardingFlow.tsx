@@ -4,7 +4,6 @@ import { ArrowUp } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 
 import {
-  getIdentity,
   importIdentity,
   persistCurrentIdentity,
 } from "@/shared/api/tauriIdentity";
