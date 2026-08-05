@@ -4,6 +4,7 @@ use axum::{
     routing::get,
     Router,
 };
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use nostr::{SecretKey, ToBech32};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -125,6 +126,12 @@ pub async fn start_google_workspace_login(
             .await;
     });
 
+    let code_verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    
+    let mut hasher = Sha256::new();
+    hasher.update(code_verifier.as_bytes());
+    let code_challenge = URL_SAFE_NO_PAD.encode(hasher.finalize());
+
     let mut auth_url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth")
         .map_err(|e| e.to_string())?;
     auth_url
@@ -134,7 +141,9 @@ pub async fn start_google_workspace_login(
         .append_pair("response_type", "code")
         .append_pair("scope", "openid email profile")
         .append_pair("hd", ALLOWED_DOMAIN)
-        .append_pair("prompt", "select_account");
+        .append_pair("prompt", "select_account")
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256");
 
     tauri_plugin_opener::OpenerExt::opener(&app_handle)
         .open_url(auth_url.as_str(), None::<&str>)
@@ -149,17 +158,26 @@ pub async fn start_google_workspace_login(
     let code = code_result?;
 
     let client = reqwest::Client::new();
-    let token_resp: TokenResponse = client
+    let token_res = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code.as_str()),
             ("client_id", GOOGLE_CLIENT_ID),
             ("grant_type", "authorization_code"),
             ("redirect_uri", redirect_uri.as_str()),
+            ("code_verifier", code_verifier.as_str()),
         ])
         .send()
         .await
-        .map_err(|e| format!("failed token exchange request: {e}"))?
+        .map_err(|e| format!("failed token exchange request: {e}"))?;
+
+    if !token_res.status().is_success() {
+        let status = token_res.status();
+        let body = token_res.text().await.unwrap_or_default();
+        return Err(format!("Google token exchange failed ({status}): {body}"));
+    }
+
+    let token_resp: TokenResponse = token_res
         .json()
         .await
         .map_err(|e| format!("failed parsing token response: {e}"))?;
