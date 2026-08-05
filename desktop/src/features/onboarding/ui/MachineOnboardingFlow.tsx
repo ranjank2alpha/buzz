@@ -108,27 +108,6 @@ export function MachineOnboardingFlow({
     [],
   );
 
-  const loadFreshIdentity = React.useCallback(async () => {
-    setIsPending(true);
-    setError(null);
-    try {
-      const identity = await getIdentity();
-      queryClient.setQueryData(["identity"], identity);
-      setSelectedPubkey(identity.pubkey);
-      setIdentityStorage(identity.storage);
-      setBackupDirection("forward");
-      setReturningFromSecurity(false);
-      setBackupSubview("created");
-      setPage("backup");
-    } catch (cause) {
-      setError(
-        cause instanceof Error ? cause.message : "Failed to load identity",
-      );
-    } finally {
-      setIsPending(false);
-    }
-  }, [queryClient]);
-
   const handleGoogleSignIn = React.useCallback(async () => {
     setIsPending(true);
     setError(null);
