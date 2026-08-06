@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use nostr::ToBech32;
+use nostr::{SecretKey, ToBech32};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Mutex, time::Duration};
@@ -26,6 +26,26 @@ fn is_secret_configured(secret: Option<&str>) -> bool {
 #[tauri::command]
 pub fn google_sso_available() -> bool {
     is_secret_configured(option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET"))
+        && is_secret_configured(option_env!("BUZZ_DESKTOP_BUILD_IDENTITY_PEPPER"))
+}
+
+fn derive_nostr_secret_key(pepper: &str, google_sub: &str) -> Result<SecretKey, String> {
+    let mut hasher = Sha256::new();
+    hasher.update(pepper.as_bytes());
+    hasher.update(google_sub.as_bytes());
+    let hash: [u8; 32] = hasher.finalize().into();
+    SecretKey::from_slice(&hash)
+        .map_err(|e| format!("failed creating secret key from derived hash: {e}"))
+}
+
+fn check_safety_guards(keyring_locked: bool, identity_lost: bool) -> Result<(), String> {
+    if keyring_locked {
+        return Err("Your secure storage is currently locked. Please unlock your keyring and retry.".into());
+    }
+    if identity_lost {
+        return Err("Identity is lost. Please restore from backup and try again.".into());
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -44,6 +64,7 @@ struct TokenResponse {
 
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
+    sub: String,
     email: Option<String>,
     hd: Option<String>,
     name: Option<String>,
@@ -298,30 +319,40 @@ pub async fn start_google_workspace_login(
     let state = app_handle.state::<AppState>();
     let keyring_locked = state.keyring_locked.load(std::sync::atomic::Ordering::Acquire);
     let identity_lost = state.identity_lost.load(std::sync::atomic::Ordering::Acquire);
-    let storage = state.identity_storage();
+    check_safety_guards(keyring_locked, identity_lost)?;
 
-    let decision = resolve_login_key_decision(storage, keyring_locked, identity_lost)?;
+    let pepper = option_env!("BUZZ_DESKTOP_BUILD_IDENTITY_PEPPER")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| "Google SSO is not available in this build (missing identity pepper).".to_string())?;
 
-    let (nsec, is_fresh_key) = match decision {
-        LoginKeyDecision::ReuseExisting => {
-            let existing_nsec = {
-                let keys = state.keys.lock().ok();
-                keys.and_then(|k| k.secret_key().to_bech32().ok())
-            };
-            let nsec = existing_nsec.ok_or_else(|| "Failed to read existing identity key.".to_string())?;
-            (nsec, false)
-        }
-        LoginKeyDecision::GenerateFresh => {
-            let keys = nostr::Keys::generate();
-            let nsec = keys
-                .secret_key()
-                .to_bech32()
-                .map_err(|e| format!("failed encoding generated nsec: {e}"))?;
-            (nsec, true)
-        }
+    let secret_key = derive_nostr_secret_key(pepper, &claims.sub)?;
+    let keys = nostr::Keys::new(secret_key);
+    let nsec = keys
+        .secret_key()
+        .to_bech32()
+        .map_err(|e| format!("failed encoding derived nsec: {e}"))?;
+    let derived_pubkey = keys.public_key().to_hex();
+
+    let existing_pubkey = {
+        let keys = state.keys.lock().ok();
+        keys.map(|k| k.public_key().to_hex())
     };
+    let has_persisted_identity = state.identity_storage() != crate::app_state::IdentityStorage::Ephemeral;
 
-    let identity = crate::commands::identity::import_identity(nsec.clone(), None, app_handle).await?;
+    if let Some(existing_pubkey) = existing_pubkey {
+        if existing_pubkey != derived_pubkey {
+            tracing::warn!(
+                "Replacing existing identity pubkey {} with derived Google SSO pubkey {}",
+                existing_pubkey,
+                derived_pubkey
+            );
+        }
+    }
+
+    let is_fresh_key = !has_persisted_identity;
+
+    let identity = crate::commands::identity::import_identity(nsec, None, app_handle).await?;
 
     tracing::info!("Google SSO flow completed successfully for {}", user_email);
 
@@ -353,33 +384,6 @@ fn parse_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
         .map_err(|e| format!("failed parsing JWT claims: {e}"))
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum LoginKeyDecision {
-    ReuseExisting,
-    GenerateFresh,
-}
-
-/// Resolves whether a new Google SSO login should generate a fresh Nostr identity or reuse the existing one.
-///
-/// NOTE: This function takes NO `google_sub`. Identity derivation from SSO subjects is prohibited.
-/// This signature acts as the regression barrier against reintroducing derivation.
-fn resolve_login_key_decision(
-    storage: crate::app_state::IdentityStorage,
-    keyring_locked: bool,
-    identity_lost: bool,
-) -> Result<LoginKeyDecision, String> {
-    if keyring_locked {
-        return Err("Your secure storage is currently locked. Please unlock your keyring and retry.".into());
-    }
-    if identity_lost {
-        return Err("Identity is lost. Please restore from backup and try again.".into());
-    }
-    match storage {
-        crate::app_state::IdentityStorage::Ephemeral => Ok(LoginKeyDecision::GenerateFresh),
-        _ => Ok(LoginKeyDecision::ReuseExisting),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +394,27 @@ mod tests {
         assert!(!is_secret_configured(Some("")));
         assert!(!is_secret_configured(Some("   ")));
         assert!(is_secret_configured(Some("secret-value")));
+    }
+
+    #[test]
+    fn test_derive_nostr_secret_key() {
+        let pepper1 = "pepper-1";
+        let pepper2 = "pepper-2";
+        let sub1 = "sub-12345";
+        let sub2 = "sub-67890";
+
+        // Same pepper + same sub -> identical key across repeated calls
+        let key1_a = derive_nostr_secret_key(pepper1, sub1).unwrap();
+        let key1_b = derive_nostr_secret_key(pepper1, sub1).unwrap();
+        assert_eq!(key1_a, key1_b);
+
+        // Same sub + different peppers -> different keys
+        let key_diff_pepper = derive_nostr_secret_key(pepper2, sub1).unwrap();
+        assert_ne!(key1_a, key_diff_pepper);
+
+        // Different subs + same pepper -> different keys
+        let key_diff_sub = derive_nostr_secret_key(pepper1, sub2).unwrap();
+        assert_ne!(key1_a, key_diff_sub);
     }
 
     #[test]
@@ -413,6 +438,7 @@ mod tests {
         let jwt = format!("header.{b64_payload}.signature");
 
         let claims = parse_id_token_claims(&jwt).unwrap();
+        assert_eq!(claims.sub, "12345");
         assert_eq!(claims.email.as_deref(), Some("alice@k2alpha.ai"));
         assert_eq!(claims.hd.as_deref(), Some("k2alpha.ai"));
         assert_eq!(claims.name.as_deref(), Some("Alice"));
@@ -446,35 +472,14 @@ mod tests {
     }
 
     #[test]
-    fn test_login_key_decision_matrix() {
-        use crate::app_state::IdentityStorage;
+    fn test_safety_guards_matrix() {
+        // Unlocked and not lost -> Ok
+        assert!(check_safety_guards(false, false).is_ok());
 
-        // Ephemeral, unlocked, not lost -> GenerateFresh
-        assert_eq!(
-            resolve_login_key_decision(IdentityStorage::Ephemeral, false, false).unwrap(),
-            LoginKeyDecision::GenerateFresh
-        );
+        // Keyring locked -> Err
+        assert!(check_safety_guards(true, false).is_err());
 
-        // Keyring/file/Environment -> ReuseExisting
-        assert_eq!(
-            resolve_login_key_decision(IdentityStorage::SystemKeyring, false, false).unwrap(),
-            LoginKeyDecision::ReuseExisting
-        );
-        assert_eq!(
-            resolve_login_key_decision(IdentityStorage::LocalFile, false, false).unwrap(),
-            LoginKeyDecision::ReuseExisting
-        );
-        assert_eq!(
-            resolve_login_key_decision(IdentityStorage::Environment, false, false).unwrap(),
-            LoginKeyDecision::ReuseExisting
-        );
-
-        // keyring_locked = true -> Err
-        assert!(resolve_login_key_decision(IdentityStorage::SystemKeyring, true, false).is_err());
-        assert!(resolve_login_key_decision(IdentityStorage::Ephemeral, true, false).is_err());
-
-        // identity_lost = true -> Err
-        assert!(resolve_login_key_decision(IdentityStorage::SystemKeyring, false, true).is_err());
-        assert!(resolve_login_key_decision(IdentityStorage::Ephemeral, false, true).is_err());
+        // Identity lost -> Err
+        assert!(check_safety_guards(false, true).is_err());
     }
 }

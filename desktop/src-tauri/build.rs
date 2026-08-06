@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_RELAY_RECONNECT_CMD");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_GOOGLE_CLIENT_SECRET");
+    println!("cargo:rerun-if-env-changed=BUZZ_BUILD_IDENTITY_PEPPER");
     println!("cargo:rustc-check-cfg=cfg(buzz_updater_enabled)");
 
     if let Ok(relay_url) = std::env::var("BUZZ_RELAY_URL") {
@@ -27,6 +28,14 @@ fn main() {
         .filter(|value| !value.is_empty())
     {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET={client_secret}");
+    }
+
+    if let Some(pepper) = std::env::var("BUZZ_BUILD_IDENTITY_PEPPER")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_IDENTITY_PEPPER={pepper}");
     }
 
     if let Ok(relay_http) = std::env::var("BUZZ_RELAY_HTTP") {

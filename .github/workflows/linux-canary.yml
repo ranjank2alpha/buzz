@@ -197,6 +197,9 @@ jobs:
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           BUZZ_BUILD_GOOGLE_CLIENT_SECRET: ${{ secrets.BUZZ_GOOGLE_CLIENT_SECRET }}
+          BUZZ_RELAY_URL: wss://k2alpha.communities.buzz.xyz
+          BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY: "1"
+          BUZZ_BUILD_IDENTITY_PEPPER: ${{ secrets.BUZZ_IDENTITY_PEPPER }}
 
       - name: Fix AppImage (remove infra libs, symlink system GStreamer)
         # fix-appimage.sh checks for TAURI_SIGNING_PRIVATE_KEY and skips
