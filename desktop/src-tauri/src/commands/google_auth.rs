@@ -16,6 +16,7 @@ use crate::{app_state::AppState, models::IdentityInfo};
 
 const GOOGLE_CLIENT_ID: &str =
     "928375928891-mjfo59obr65fldcehesvbq0cve94ease.apps.googleusercontent.com";
+const GOOGLE_CLIENT_SECRET: &str = "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";
 const ALLOWED_DOMAIN: &str = "k2alpha.ai";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const GOOGLE_COMPANY_SALT: &[u8] = b"buzz_k2alpha_company_salt_v1";
@@ -163,6 +164,7 @@ pub async fn start_google_workspace_login(
         .form(&[
             ("code", code.as_str()),
             ("client_id", GOOGLE_CLIENT_ID),
+            ("client_secret", GOOGLE_CLIENT_SECRET),
             ("grant_type", "authorization_code"),
             ("redirect_uri", redirect_uri.as_str()),
             ("code_verifier", code_verifier.as_str()),
