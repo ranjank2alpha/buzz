@@ -103,7 +103,7 @@ export function MachineOnboardingFlow({
   const backupSession = useEncryptedBackupSession();
   const reduceMotion = useReducedMotion() ?? false;
   const isSecuritySubview = page === "backup" && backupSubview !== "created";
-  
+
   const { data: ssoAvailable } = useQuery({
     queryKey: ["google_sso_available"],
     queryFn: isGoogleSsoAvailable,
@@ -126,7 +126,7 @@ export function MachineOnboardingFlow({
       continueWithIdentity(identity.pubkey);
       setIdentityWasImported(true);
       setSelectedPubkey(identity.pubkey);
-      
+
       if (res.isFreshKey) {
         setIdentityStorage(identity.storage);
         setBackupDirection("forward");
@@ -242,7 +242,7 @@ export function MachineOnboardingFlow({
                 <p className="mt-4 text-sm text-destructive">{error}</p>
               ) : null}
               <div className="mt-10 flex w-full flex-col items-center gap-3">
-                {ssoAvailable !== false && (
+                {ssoAvailable === true && (
                   <Button
                     className={ONBOARDING_LANDING_CTA_CLASS}
                     disabled={isPending}

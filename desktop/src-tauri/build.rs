@@ -21,7 +21,11 @@ fn main() {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");
     }
 
-    if let Ok(client_secret) = std::env::var("BUZZ_BUILD_GOOGLE_CLIENT_SECRET") {
+    if let Some(client_secret) = std::env::var("BUZZ_BUILD_GOOGLE_CLIENT_SECRET")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET={client_secret}");
     }
 

@@ -19,9 +19,13 @@ const GOOGLE_CLIENT_ID: &str =
 const ALLOWED_DOMAIN: &str = "k2alpha.ai";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
+fn is_secret_configured(secret: Option<&str>) -> bool {
+    secret.map(|s| !s.trim().is_empty()).unwrap_or(false)
+}
+
 #[tauri::command]
 pub fn google_sso_available() -> bool {
-    option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET").is_some()
+    is_secret_configured(option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET"))
 }
 
 #[derive(Serialize)]
@@ -30,8 +34,6 @@ pub struct GoogleAuthResult {
     pub identity: IdentityInfo,
     pub email: String,
     pub name: Option<String>,
-    pub google_sub: String,
-    pub nsec: String,
     pub is_fresh_key: bool,
 }
 
@@ -42,13 +44,13 @@ struct TokenResponse {
 
 #[derive(Debug, Deserialize)]
 struct IdTokenClaims {
-    sub: String,
     email: Option<String>,
     hd: Option<String>,
     name: Option<String>,
     aud: String,
     exp: u64,
     email_verified: Option<bool>,
+    iss: Option<String>,
 }
 
 struct CallbackState {
@@ -86,9 +88,13 @@ async fn oauth_callback(
         }
     };
 
+    if let Err(ref err) = result {
+        tracing::error!("OAuth callback failure: {err}");
+    }
+
     if let Ok(mut lock) = state.sender.lock() {
         if let Some(sender) = lock.take() {
-            let _ = sender.send(result);
+            let _ = sender.send(result.clone());
         } else {
             tracing::warn!("OAuth callback received but sender already used");
         }
@@ -96,7 +102,13 @@ async fn oauth_callback(
         tracing::error!("OAuth callback sender mutex poisoned");
     }
 
-    Html(
+    let html = render_oauth_callback_html(result.is_ok());
+
+    Html(html).into_response()
+}
+
+fn render_oauth_callback_html(is_success: bool) -> &'static str {
+    if is_success {
         r#"<!doctype html>
 <html>
 <head><title>Authentication Complete</title></head>
@@ -107,9 +119,20 @@ async fn oauth_callback(
   <p style="margin: 0; color: #94a3b8; font-size: 14px;">You can now close this tab and return to the Buzz desktop app.</p>
 </div>
 </body>
-</html>"#,
-    )
-    .into_response()
+</html>"#
+    } else {
+        r#"<!doctype html>
+<html>
+<head><title>Authentication Failed</title></head>
+<body style="font-family: ui-sans-serif, system-ui, sans-serif; display: grid; place-items: center; min-height: 100vh; background: #0f172a; color: #f8fafc; margin: 0;">
+<div style="text-align: center; padding: 2.5rem; border-radius: 16px; background: #1e293b; border: 1px solid #334155; max-width: 400px;">
+  <div style="font-size: 48px; margin-bottom: 12px;">⚠️</div>
+  <h2 style="margin: 0 0 8px 0; font-size: 20px;">Authentication Failed</h2>
+  <p style="margin: 0; color: #94a3b8; font-size: 14px;">Google authentication failed. Please return to the Buzz desktop app and try again.</p>
+</div>
+</body>
+</html>"#
+    }
 }
 
 #[tauri::command]
@@ -195,6 +218,8 @@ pub async fn start_google_workspace_login(
     let code = code_result?;
 
     let client_secret = option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
         .ok_or_else(|| "Google SSO is not available in this build (missing client secret).".to_string())?;
 
     let client = reqwest::Client::builder()
@@ -234,6 +259,13 @@ pub async fn start_google_workspace_login(
 
     let claims = parse_id_token_claims(&id_token_str)?;
 
+    let valid_issuers = ["https://accounts.google.com", "accounts.google.com"];
+    let iss = claims.iss.as_deref().unwrap_or_default();
+    if !valid_issuers.contains(&iss) {
+        tracing::error!("Token issuer mismatch or missing: {iss}");
+        return Err("Invalid token issuer.".to_string());
+    }
+
     if claims.aud != GOOGLE_CLIENT_ID {
         tracing::error!("Token audience mismatch: {}", claims.aud);
         return Err("Invalid token audience.".to_string());
@@ -249,7 +281,7 @@ pub async fn start_google_workspace_login(
         return Err("Authentication token expired. Please try again.".to_string());
     }
 
-    if claims.email_verified == Some(false) {
+    if claims.email_verified != Some(true) {
         tracing::error!("Google account email is not verified");
         return Err("Email address is not verified by Google.".to_string());
     }
@@ -297,8 +329,6 @@ pub async fn start_google_workspace_login(
         identity,
         email: user_email,
         name: claims.name,
-        google_sub: claims.sub,
-        nsec,
         is_fresh_key,
     })
 }
@@ -355,8 +385,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_secret_configured_check() {
+        assert!(!is_secret_configured(None));
+        assert!(!is_secret_configured(Some("")));
+        assert!(!is_secret_configured(Some("   ")));
+        assert!(is_secret_configured(Some("secret-value")));
+    }
+
+    #[test]
+    fn test_oauth_callback_html_rendering() {
+        let success_html = render_oauth_callback_html(true);
+        let failure_html = render_oauth_callback_html(false);
+
+        assert_ne!(success_html, failure_html);
+        assert!(success_html.contains("Authenticated with @k2alpha.ai"));
+        assert!(failure_html.contains("Authentication Failed"));
+        assert!(!failure_html.contains("Authenticated with @k2alpha.ai"));
+    }
+
+    #[test]
     fn test_parse_id_token_claims_valid_payload() {
-        let payload = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","name":"Alice","aud":"test_client_id","exp":9999999999,"email_verified":true}"#;
+        let payload = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","name":"Alice","aud":"test_client_id","exp":9999999999,"email_verified":true,"iss":"https://accounts.google.com"}"#;
         let b64_payload = base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             payload,
@@ -364,13 +413,36 @@ mod tests {
         let jwt = format!("header.{b64_payload}.signature");
 
         let claims = parse_id_token_claims(&jwt).unwrap();
-        assert_eq!(claims.sub, "12345");
         assert_eq!(claims.email.as_deref(), Some("alice@k2alpha.ai"));
         assert_eq!(claims.hd.as_deref(), Some("k2alpha.ai"));
         assert_eq!(claims.name.as_deref(), Some("Alice"));
         assert_eq!(claims.aud, "test_client_id");
         assert_eq!(claims.exp, 9999999999);
         assert_eq!(claims.email_verified, Some(true));
+        assert_eq!(claims.iss.as_deref(), Some("https://accounts.google.com"));
+    }
+
+    #[test]
+    fn test_parse_id_token_claims_email_verified_and_iss() {
+        // Missing email_verified or false
+        let payload_unverified = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","aud":"test_client_id","exp":9999999999,"email_verified":false,"iss":"https://accounts.google.com"}"#;
+        let b64_unverified = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            payload_unverified,
+        );
+        let jwt_unverified = format!("header.{b64_unverified}.sig");
+        let claims_unverified = parse_id_token_claims(&jwt_unverified).unwrap();
+        assert_eq!(claims_unverified.email_verified, Some(false));
+
+        let payload_no_verified = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","aud":"test_client_id","exp":9999999999,"iss":"accounts.google.com"}"#;
+        let b64_no_verified = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            payload_no_verified,
+        );
+        let jwt_no_verified = format!("header.{b64_no_verified}.sig");
+        let claims_no_verified = parse_id_token_claims(&jwt_no_verified).unwrap();
+        assert_eq!(claims_no_verified.email_verified, None);
+        assert_eq!(claims_no_verified.iss.as_deref(), Some("accounts.google.com"));
     }
 
     #[test]
