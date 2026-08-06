@@ -119,13 +119,19 @@ jobs:
       - name: Generate non-updating bundle config
         shell: bash
         run: |
-          cat > desktop/src-tauri/tauri.canary.conf.json <<'JSON'
+          TIMESTAMP=$(date -u +"%d%m-%H%M")
+          cat > desktop/src-tauri/tauri.canary.conf.json <<EOF
           {
+            "productName": "Buzz ${{ steps.version.outputs.version }}-fork-${TIMESTAMP}",
             "bundle": {
               "createUpdaterArtifacts": false
             }
           }
-          JSON
+          EOF
+
+      - name: Force recompile desktop crate (bust stale cache)
+        shell: bash
+        run: cargo clean -p buzz-desktop --release --target "$TARGET"
 
       - name: Build sidecars
         shell: bash
