@@ -13,8 +13,13 @@ export type GoogleAuthResult = {
   name?: string | null;
   googleSub: string;
   nsec: string;
+  isFreshKey: boolean;
 };
 
 export async function startGoogleWorkspaceLogin(): Promise<GoogleAuthResult> {
   return invoke<GoogleAuthResult>("start_google_workspace_login");
+}
+
+export async function isGoogleSsoAvailable(): Promise<boolean> {
+  return invoke<boolean>("google_sso_available");
 }

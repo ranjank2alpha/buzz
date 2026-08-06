@@ -5,7 +5,7 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use nostr::{SecretKey, ToBech32};
+use nostr::ToBech32;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Mutex, time::Duration};
@@ -16,10 +16,13 @@ use crate::{app_state::AppState, models::IdentityInfo};
 
 const GOOGLE_CLIENT_ID: &str =
     "928375928891-mjfo59obr65fldcehesvbq0cve94ease.apps.googleusercontent.com";
-const GOOGLE_CLIENT_SECRET: &str = "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";
 const ALLOWED_DOMAIN: &str = "k2alpha.ai";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const GOOGLE_COMPANY_SALT: &[u8] = b"buzz_k2alpha_company_salt_v1";
+
+#[tauri::command]
+pub fn google_sso_available() -> bool {
+    option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET").is_some()
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,6 +32,7 @@ pub struct GoogleAuthResult {
     pub name: Option<String>,
     pub google_sub: String,
     pub nsec: String,
+    pub is_fresh_key: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,32 +46,54 @@ struct IdTokenClaims {
     email: Option<String>,
     hd: Option<String>,
     name: Option<String>,
+    aud: String,
+    exp: u64,
+    email_verified: Option<bool>,
 }
 
 struct CallbackState {
     sender: Mutex<Option<oneshot::Sender<Result<String, String>>>>,
+    state: String,
+}
+
+struct ServerShutdownGuard {
+    tx: Option<oneshot::Sender<()>>,
+}
+
+impl Drop for ServerShutdownGuard {
+    fn drop(&mut self) {
+        if let Some(tx) = self.tx.take() {
+            let _ = tx.send(());
+        }
+    }
 }
 
 async fn oauth_callback(
     Query(query): Query<HashMap<String, String>>,
     AxumState(state): AxumState<std::sync::Arc<CallbackState>>,
 ) -> Response {
-    let result = match query.get("code").filter(|code| !code.is_empty()) {
-        Some(code) => Ok(code.clone()),
-        None => Err(query
-            .get("error_description")
-            .or_else(|| query.get("error"))
-            .cloned()
-            .unwrap_or_else(|| "Google authentication was cancelled or failed.".to_owned())),
+    let result = if query.get("state") != Some(&state.state) {
+        tracing::warn!("OAuth callback rejected: state mismatch or missing");
+        Err("Invalid state parameter. Authentication aborted.".to_owned())
+    } else {
+        match query.get("code").filter(|code| !code.is_empty()) {
+            Some(code) => Ok(code.clone()),
+            None => Err(query
+                .get("error_description")
+                .or_else(|| query.get("error"))
+                .cloned()
+                .unwrap_or_else(|| "Google authentication was cancelled or failed.".to_owned())),
+        }
     };
 
-    if let Some(sender) = state
-        .sender
-        .lock()
-        .expect("callback sender poisoned")
-        .take()
-    {
-        let _ = sender.send(result);
+    if let Ok(mut lock) = state.sender.lock() {
+        if let Some(sender) = lock.take() {
+            let _ = sender.send(result);
+        } else {
+            tracing::warn!("OAuth callback received but sender already used");
+        }
+    } else {
+        tracing::error!("OAuth callback sender mutex poisoned");
     }
 
     Html(
@@ -86,22 +112,18 @@ async fn oauth_callback(
     .into_response()
 }
 
-fn derive_nostr_secret_key(google_sub: &str) -> Result<SecretKey, String> {
-    let mut hasher = Sha256::new();
-    hasher.update(GOOGLE_COMPANY_SALT);
-    hasher.update(google_sub.as_bytes());
-    let hash = hasher.finalize();
-
-    SecretKey::from_slice(&hash).map_err(|e| format!("invalid derived secret key: {e}"))
-}
-
 #[tauri::command]
 pub async fn start_google_workspace_login(
     app_handle: tauri::AppHandle,
 ) -> Result<GoogleAuthResult, String> {
+    tracing::info!("Starting Google Workspace SSO login flow");
+
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
-        .map_err(|e| format!("failed to bind local callback port: {e}"))?;
+        .map_err(|e| {
+            tracing::error!("Failed to bind local callback port: {e}");
+            format!("failed to bind local callback port: {e}")
+        })?;
     let port = listener
         .local_addr()
         .map_err(|e| format!("failed to read local port: {e}"))?
@@ -109,9 +131,12 @@ pub async fn start_google_workspace_login(
 
     let redirect_uri = format!("http://127.0.0.1:{port}/auth/callback");
 
+    let oauth_state = uuid::Uuid::new_v4().simple().to_string();
+
     let (sender, receiver) = oneshot::channel();
     let callback_state = std::sync::Arc::new(CallbackState {
         sender: Mutex::new(Some(sender)),
+        state: oauth_state.clone(),
     });
 
     let router = Router::new()
@@ -119,6 +144,10 @@ pub async fn start_google_workspace_login(
         .with_state(callback_state);
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let _guard = ServerShutdownGuard {
+        tx: Some(shutdown_tx),
+    };
+
     tokio::spawn(async move {
         let _ = axum::serve(listener, router)
             .with_graceful_shutdown(async move {
@@ -143,6 +172,7 @@ pub async fn start_google_workspace_login(
         .append_pair("scope", "openid email profile")
         .append_pair("hd", ALLOWED_DOMAIN)
         .append_pair("prompt", "select_account")
+        .append_pair("state", &oauth_state)
         .append_pair("code_challenge", &code_challenge)
         .append_pair("code_challenge_method", "S256");
 
@@ -152,19 +182,32 @@ pub async fn start_google_workspace_login(
 
     let code_result = tokio::time::timeout(LOGIN_TIMEOUT, receiver)
         .await
-        .map_err(|_| "Authentication timed out. Please try signing in again.".to_string())?
-        .map_err(|_| "Callback channel closed.".to_string())?;
+        .map_err(|_| {
+            tracing::warn!("OAuth authentication timed out");
+            "Authentication timed out. Please try signing in again.".to_string()
+        })?
+        .map_err(|e| {
+            tracing::error!("OAuth callback channel closed: {e}");
+            "Callback channel closed.".to_string()
+        })?;
 
-    let _ = shutdown_tx.send(());
+    // Drop guard will handle the server shutdown automatically.
     let code = code_result?;
 
-    let client = reqwest::Client::new();
+    let client_secret = option_env!("BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET")
+        .ok_or_else(|| "Google SSO is not available in this build (missing client secret).".to_string())?;
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
     let token_res = client
         .post("https://oauth2.googleapis.com/token")
         .form(&[
             ("code", code.as_str()),
             ("client_id", GOOGLE_CLIENT_ID),
-            ("client_secret", GOOGLE_CLIENT_SECRET),
+            ("client_secret", client_secret),
             ("grant_type", "authorization_code"),
             ("redirect_uri", redirect_uri.as_str()),
             ("code_verifier", code_verifier.as_str()),
@@ -176,7 +219,8 @@ pub async fn start_google_workspace_login(
     if !token_res.status().is_success() {
         let status = token_res.status();
         let body = token_res.text().await.unwrap_or_default();
-        return Err(format!("Google token exchange failed ({status}): {body}"));
+        tracing::error!("Google token exchange failed ({status}): {body}");
+        return Err(format!("Google token exchange failed ({status}). Please try again."));
     }
 
     let token_resp: TokenResponse = token_res
@@ -190,6 +234,26 @@ pub async fn start_google_workspace_login(
 
     let claims = parse_id_token_claims(&id_token_str)?;
 
+    if claims.aud != GOOGLE_CLIENT_ID {
+        tracing::error!("Token audience mismatch: {}", claims.aud);
+        return Err("Invalid token audience.".to_string());
+    }
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    if claims.exp < now {
+        tracing::error!("Token has expired");
+        return Err("Authentication token expired. Please try again.".to_string());
+    }
+
+    if claims.email_verified == Some(false) {
+        tracing::error!("Google account email is not verified");
+        return Err("Email address is not verified by Google.".to_string());
+    }
+
     let user_email = claims.email.unwrap_or_default().trim().to_lowercase();
     let user_domain = claims.hd.unwrap_or_default().trim().to_lowercase();
 
@@ -200,22 +264,34 @@ pub async fn start_google_workspace_login(
     }
 
     let state = app_handle.state::<AppState>();
-    let existing_nsec = {
-        let keys = state.keys.lock().ok();
-        keys.and_then(|k| k.secret_key().to_bech32().ok())
-    };
+    let keyring_locked = state.keyring_locked.load(std::sync::atomic::Ordering::Acquire);
+    let identity_lost = state.identity_lost.load(std::sync::atomic::Ordering::Acquire);
+    let storage = state.identity_storage();
 
-    let nsec = match existing_nsec {
-        Some(nsec) => nsec,
-        None => {
-            let derived_sk = derive_nostr_secret_key(&claims.sub)?;
-            derived_sk
+    let decision = resolve_login_key_decision(storage, keyring_locked, identity_lost)?;
+
+    let (nsec, is_fresh_key) = match decision {
+        LoginKeyDecision::ReuseExisting => {
+            let existing_nsec = {
+                let keys = state.keys.lock().ok();
+                keys.and_then(|k| k.secret_key().to_bech32().ok())
+            };
+            let nsec = existing_nsec.ok_or_else(|| "Failed to read existing identity key.".to_string())?;
+            (nsec, false)
+        }
+        LoginKeyDecision::GenerateFresh => {
+            let keys = nostr::Keys::generate();
+            let nsec = keys
+                .secret_key()
                 .to_bech32()
-                .map_err(|e| format!("failed encoding derived nsec: {e}"))?
+                .map_err(|e| format!("failed encoding generated nsec: {e}"))?;
+            (nsec, true)
         }
     };
 
     let identity = crate::commands::identity::import_identity(nsec.clone(), None, app_handle).await?;
+
+    tracing::info!("Google SSO flow completed successfully for {}", user_email);
 
     Ok(GoogleAuthResult {
         identity,
@@ -223,6 +299,7 @@ pub async fn start_google_workspace_login(
         name: claims.name,
         google_sub: claims.sub,
         nsec,
+        is_fresh_key,
     })
 }
 
@@ -246,30 +323,40 @@ fn parse_id_token_claims(id_token: &str) -> Result<IdTokenClaims, String> {
         .map_err(|e| format!("failed parsing JWT claims: {e}"))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum LoginKeyDecision {
+    ReuseExisting,
+    GenerateFresh,
+}
+
+/// Resolves whether a new Google SSO login should generate a fresh Nostr identity or reuse the existing one.
+///
+/// NOTE: This function takes NO `google_sub`. Identity derivation from SSO subjects is prohibited.
+/// This signature acts as the regression barrier against reintroducing derivation.
+fn resolve_login_key_decision(
+    storage: crate::app_state::IdentityStorage,
+    keyring_locked: bool,
+    identity_lost: bool,
+) -> Result<LoginKeyDecision, String> {
+    if keyring_locked {
+        return Err("Your secure storage is currently locked. Please unlock your keyring and retry.".into());
+    }
+    if identity_lost {
+        return Err("Identity is lost. Please restore from backup and try again.".into());
+    }
+    match storage {
+        crate::app_state::IdentityStorage::Ephemeral => Ok(LoginKeyDecision::GenerateFresh),
+        _ => Ok(LoginKeyDecision::ReuseExisting),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn test_derive_nostr_secret_key_is_deterministic() {
-        let sub = "108392019482019382";
-        let key1 = derive_nostr_secret_key(sub).unwrap();
-        let key2 = derive_nostr_secret_key(sub).unwrap();
-
-        assert_eq!(key1.to_bech32().unwrap(), key2.to_bech32().unwrap());
-    }
-
-    #[test]
-    fn test_derive_nostr_secret_key_differs_for_different_subs() {
-        let key1 = derive_nostr_secret_key("sub_alice").unwrap();
-        let key2 = derive_nostr_secret_key("sub_bob").unwrap();
-
-        assert_ne!(key1.to_bech32().unwrap(), key2.to_bech32().unwrap());
-    }
-
-    #[test]
     fn test_parse_id_token_claims_valid_payload() {
-        let payload = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","name":"Alice"}"#;
+        let payload = r#"{"sub":"12345","email":"alice@k2alpha.ai","hd":"k2alpha.ai","name":"Alice","aud":"test_client_id","exp":9999999999,"email_verified":true}"#;
         let b64_payload = base64::Engine::encode(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD,
             payload,
@@ -281,5 +368,41 @@ mod tests {
         assert_eq!(claims.email.as_deref(), Some("alice@k2alpha.ai"));
         assert_eq!(claims.hd.as_deref(), Some("k2alpha.ai"));
         assert_eq!(claims.name.as_deref(), Some("Alice"));
+        assert_eq!(claims.aud, "test_client_id");
+        assert_eq!(claims.exp, 9999999999);
+        assert_eq!(claims.email_verified, Some(true));
+    }
+
+    #[test]
+    fn test_login_key_decision_matrix() {
+        use crate::app_state::IdentityStorage;
+
+        // Ephemeral, unlocked, not lost -> GenerateFresh
+        assert_eq!(
+            resolve_login_key_decision(IdentityStorage::Ephemeral, false, false).unwrap(),
+            LoginKeyDecision::GenerateFresh
+        );
+
+        // Keyring/file/Environment -> ReuseExisting
+        assert_eq!(
+            resolve_login_key_decision(IdentityStorage::SystemKeyring, false, false).unwrap(),
+            LoginKeyDecision::ReuseExisting
+        );
+        assert_eq!(
+            resolve_login_key_decision(IdentityStorage::LocalFile, false, false).unwrap(),
+            LoginKeyDecision::ReuseExisting
+        );
+        assert_eq!(
+            resolve_login_key_decision(IdentityStorage::Environment, false, false).unwrap(),
+            LoginKeyDecision::ReuseExisting
+        );
+
+        // keyring_locked = true -> Err
+        assert!(resolve_login_key_decision(IdentityStorage::SystemKeyring, true, false).is_err());
+        assert!(resolve_login_key_decision(IdentityStorage::Ephemeral, true, false).is_err());
+
+        // identity_lost = true -> Err
+        assert!(resolve_login_key_decision(IdentityStorage::SystemKeyring, false, true).is_err());
+        assert!(resolve_login_key_decision(IdentityStorage::Ephemeral, false, true).is_err());
     }
 }

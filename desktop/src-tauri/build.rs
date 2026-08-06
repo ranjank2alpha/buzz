@@ -14,10 +14,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AGENT_ENV");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_RELAY_RECONNECT_CMD");
     println!("cargo:rerun-if-env-changed=BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY");
+    println!("cargo:rerun-if-env-changed=BUZZ_BUILD_GOOGLE_CLIENT_SECRET");
     println!("cargo:rustc-check-cfg=cfg(buzz_updater_enabled)");
 
     if let Ok(relay_url) = std::env::var("BUZZ_RELAY_URL") {
         println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_RELAY_URL={relay_url}");
+    }
+
+    if let Ok(client_secret) = std::env::var("BUZZ_BUILD_GOOGLE_CLIENT_SECRET") {
+        println!("cargo:rustc-env=BUZZ_DESKTOP_BUILD_GOOGLE_CLIENT_SECRET={client_secret}");
     }
 
     if let Ok(relay_http) = std::env::var("BUZZ_RELAY_HTTP") {

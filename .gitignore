@@ -72,3 +72,26 @@ identity.key
 
 # Helm dependency tarballs — regenerable from Chart.lock via `helm dependency build`
 deploy/charts/*/charts/*.tgz
+
+# Local dev scratch: ad-hoc scripts, captured command output, downloaded installers.
+# None of these are build inputs; all are regenerable or machine-specific.
+check_status.py
+fetch_logs.py
+parse_runs.py
+run_tests.py
+test_google.py
+trigger_workflow.py
+found_installers.txt
+git_log_output.txt
+github_runs.json
+out.txt
+test_out.txt
+desktop/src-tauri/cargoout.txt
+latest_run_logs/
+scratch/
+old_google_auth.rs
+desktop/src-tauri/test_aumid.rs
+
+# Toolchain installers downloaded into the repo root
+rustup-init.exe
+vs_BuildTools.exe

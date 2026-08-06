@@ -634,6 +634,7 @@ pub fn run() {
             save_ncryptsec_copy,
             import_identity,
             start_google_workspace_login,
+            google_sso_available,
             persist_current_identity,
             get_profile,
             update_profile,

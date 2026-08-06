@@ -1,5 +1,5 @@
 import * as React from "react";
-import type { QueryClient } from "@tanstack/react-query";
+import { useQuery, type QueryClient } from "@tanstack/react-query";
 import { ArrowUp } from "lucide-react";
 import { motion, useReducedMotion } from "motion/react";
 
@@ -7,7 +7,10 @@ import {
   importIdentity,
   persistCurrentIdentity,
 } from "@/shared/api/tauriIdentity";
-import { startGoogleWorkspaceLogin } from "@/shared/api/googleAuth";
+import {
+  isGoogleSsoAvailable,
+  startGoogleWorkspaceLogin,
+} from "@/shared/api/googleAuth";
 import type { IdentityStorage } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { StartupWindowDragRegion } from "@/shared/ui/StartupWindowDragRegion";
@@ -100,6 +103,12 @@ export function MachineOnboardingFlow({
   const backupSession = useEncryptedBackupSession();
   const reduceMotion = useReducedMotion() ?? false;
   const isSecuritySubview = page === "backup" && backupSubview !== "created";
+  
+  const { data: ssoAvailable } = useQuery({
+    queryKey: ["google_sso_available"],
+    queryFn: isGoogleSsoAvailable,
+    staleTime: Infinity,
+  });
   const handleReadyRuntimeIdsChange = React.useCallback(
     (runtimeIds: readonly string[]) => {
       setReadyRuntimeIds(Array.from(new Set(runtimeIds)));
@@ -117,7 +126,16 @@ export function MachineOnboardingFlow({
       continueWithIdentity(identity.pubkey);
       setIdentityWasImported(true);
       setSelectedPubkey(identity.pubkey);
-      setPage("setup");
+      
+      if (res.isFreshKey) {
+        setIdentityStorage(identity.storage);
+        setBackupDirection("forward");
+        setReturningFromSecurity(false);
+        setBackupSubview("created");
+        setPage("backup");
+      } else {
+        setPage("setup");
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -224,18 +242,20 @@ export function MachineOnboardingFlow({
                 <p className="mt-4 text-sm text-destructive">{error}</p>
               ) : null}
               <div className="mt-10 flex w-full flex-col items-center gap-3">
-                <Button
-                  className={ONBOARDING_LANDING_CTA_CLASS}
-                  disabled={isPending}
-                  onClick={() => void handleGoogleSignIn()}
-                  type="button"
-                >
-                  {isPending
-                    ? "Signing in..."
-                    : selectedPubkey
-                      ? "Continue setup"
-                      : "Sign in with Google (@k2alpha.ai)"}
-                </Button>
+                {ssoAvailable !== false && (
+                  <Button
+                    className={ONBOARDING_LANDING_CTA_CLASS}
+                    disabled={isPending}
+                    onClick={() => void handleGoogleSignIn()}
+                    type="button"
+                  >
+                    {isPending
+                      ? "Signing in..."
+                      : selectedPubkey
+                        ? "Continue setup"
+                        : "Sign in with Google (@k2alpha.ai)"}
+                  </Button>
+                )}
                 <Button
                   className={`${ONBOARDING_SECONDARY_CTA_CLASS} px-5`}
                   disabled={isPending}

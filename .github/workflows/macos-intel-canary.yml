@@ -86,6 +86,9 @@ jobs:
           cargo build --release --target "$TARGET" -p buzz-acp -p buzz-agent -p buzz-backend-kubernetes -p buzz-dev-mcp -p git-credential-nostr -p buzz-cli
           ./scripts/bundle-sidecars.sh "$TARGET"
 
+      - name: Force recompile desktop crate (bust stale cache)
+        run: cd desktop/src-tauri && cargo clean -p buzz-desktop --release --target "$TARGET"
+
       - name: Build unsigned Intel DMG
         run: cd desktop && pnpm tauri build --verbose --no-sign --target "$TARGET" --bundles dmg --config src-tauri/tauri.canary.conf.json
         env:
@@ -93,6 +96,7 @@ jobs:
           MACOSX_DEPLOYMENT_TARGET: "10.15"
           CMAKE_OSX_DEPLOYMENT_TARGET: "10.15"
           TAURI_BUNDLER_DMG_IGNORE_CI: "true"
+          BUZZ_BUILD_GOOGLE_CLIENT_SECRET: ${{ secrets.BUZZ_GOOGLE_CLIENT_SECRET }}
 
       - name: Locate fresh Intel DMG
         id: artifact

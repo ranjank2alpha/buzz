@@ -122,7 +122,7 @@ jobs:
           TIMESTAMP=$(date -u +"%d%m-%H%M")
           cat > desktop/src-tauri/tauri.canary.conf.json <<EOF
           {
-            "productName": "Buzz ${{ steps.version.outputs.version }}-fork-${TIMESTAMP}",
+            "productName": "Buzz for k2alpha.ai (${{ steps.version.outputs.version }}-fork-${TIMESTAMP})",
             "bundle": {
               "createUpdaterArtifacts": false
             }
@@ -131,7 +131,7 @@ jobs:
 
       - name: Force recompile desktop crate (bust stale cache)
         shell: bash
-        run: cargo clean -p buzz-desktop --release --target "$TARGET"
+        run: cd desktop/src-tauri && cargo clean -p buzz-desktop --release --target "$TARGET"
 
       - name: Build sidecars
         shell: bash
@@ -144,6 +144,7 @@ jobs:
         run: cd desktop && pnpm tauri build --target "$TARGET" --bundles nsis --config src-tauri/tauri.canary.conf.json
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          BUZZ_BUILD_GOOGLE_CLIENT_SECRET: ${{ secrets.BUZZ_GOOGLE_CLIENT_SECRET }}
 
       - name: Locate NSIS installer
         id: artifact

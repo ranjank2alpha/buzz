@@ -189,10 +189,14 @@ jobs:
           cargo build --release -p buzz-acp -p buzz-agent -p buzz-backend-kubernetes -p buzz-dev-mcp -p git-credential-nostr -p buzz-cli
           ./scripts/bundle-sidecars.sh
 
+      - name: Force recompile desktop crate (bust stale cache)
+        run: cd desktop/src-tauri && cargo clean -p buzz-desktop --release
+
       - name: Build Linux Tauri app
         run: cd desktop && pnpm tauri build --ci --bundles deb,appimage --features mesh-llm --config src-tauri/tauri.canary.conf.json
         env:
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
+          BUZZ_BUILD_GOOGLE_CLIENT_SECRET: ${{ secrets.BUZZ_GOOGLE_CLIENT_SECRET }}
 
       - name: Fix AppImage (remove infra libs, symlink system GStreamer)
         # fix-appimage.sh checks for TAURI_SIGNING_PRIVATE_KEY and skips
