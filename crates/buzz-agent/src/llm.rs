@@ -101,6 +101,21 @@ impl Llm {
                 )
                 .await
                 .and_then(parse_anthropic),
+            Provider::Gemini => {
+                let body = gemini_body(
+                    &self.http,
+                    cfg,
+                    system_prompt,
+                    history,
+                    tools,
+                    effective_model,
+                    effort,
+                )
+                .await;
+                self.post_gemini(cfg, effective_model, &body)
+                    .await
+                    .and_then(parse_gemini)
+            }
             Provider::OpenRouter => {
                 let mut body =
                     openai_body(cfg, system_prompt, history, tools, effective_model, None);
@@ -260,6 +275,24 @@ impl Llm {
                     });
                     Ok(parse_anthropic(self.post_anthropic(cfg, &body).await?)?.text)
                 }
+                Provider::Gemini => {
+                    let mut body = json!({
+                        "contents": [{
+                            "role": "user",
+                            "parts": [{ "text": user_prompt }]
+                        }],
+                        "generationConfig": {
+                            "maxOutputTokens": max_output_tokens
+                        }
+                    });
+                    if !system_prompt.trim().is_empty() {
+                        body["systemInstruction"] = json!({
+                            "parts": [{ "text": system_prompt }]
+                        });
+                    }
+                    let v = self.post_gemini(cfg, effective_model, &body).await?;
+                    Ok(parse_gemini(v)?.text)
+                }
                 Provider::OpenRouter => {
                     let body = openrouter_summary_body(
                         effective_model,
@@ -361,6 +394,24 @@ impl Llm {
         post(&self.http, &url, body, cfg.llm_timeout, |r| {
             r.header("x-api-key", &cfg.api_key)
                 .header("anthropic-version", &cfg.anthropic_api_version)
+        })
+        .await
+        .map_err(PostError::into_agent)
+    }
+
+    async fn post_gemini(
+        &self,
+        cfg: &Config,
+        effective_model: &str,
+        body: &Value,
+    ) -> Result<Value, AgentError> {
+        let url = format!(
+            "{}/models/{}:generateContent",
+            cfg.base_url.trim_end_matches('/'),
+            effective_model
+        );
+        post(&self.http, &url, body, cfg.llm_timeout, |r| {
+            r.header("x-goog-api-key", &cfg.api_key)
         })
         .await
         .map_err(PostError::into_agent)
@@ -1596,6 +1647,460 @@ fn make_tool_call(
     })
 }
 
+static GEMINI_CALL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn unique_gemini_call_id() -> String {
+    format!("call_{}", GEMINI_CALL_COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn parse_gemini(v: Value) -> Result<LlmResponse, AgentError> {
+    if let Some(err) = v.get("error") {
+        let msg = err
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("Gemini API error");
+        let code = err.get("code").and_then(Value::as_i64).unwrap_or(500);
+        return Err(AgentError::Llm(format!("gemini error {code}: {msg}")));
+    }
+    let candidate = v
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|c| c.first());
+
+    let mut text = String::new();
+    let mut reasoning = String::new();
+    let mut tool_calls = Vec::new();
+    let mut stop = ProviderStop::EndTurn;
+
+    if let Some(cand) = candidate {
+        if let Some(reason) = cand.get("finishReason").and_then(Value::as_str) {
+            stop = match reason {
+                "MAX_TOKENS" => ProviderStop::MaxTokens,
+                _ => ProviderStop::EndTurn,
+            };
+        }
+        if let Some(parts) = cand
+            .get("content")
+            .and_then(|c| c.get("parts"))
+            .and_then(Value::as_array)
+        {
+            for p in parts {
+                if let Some(fc) = p.get("functionCall") {
+                    let name = fc
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string();
+                    let args = fc.get("args").cloned().unwrap_or_else(|| json!({}));
+                    let id = fc
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .map(String::from)
+                        .unwrap_or_else(unique_gemini_call_id);
+                    let mut provider_extra = Map::new();
+                    if let Some(sig) = p.get("thoughtSignature").or_else(|| p.get("thought_signature")) {
+                        provider_extra.insert("thoughtSignature".to_string(), sig.clone());
+                        provider_extra.insert("thought_signature".to_string(), sig.clone());
+                    }
+                    tool_calls.push(make_tool_call(id, name, args, provider_extra)?);
+                } else if p.get("thought").and_then(Value::as_bool).unwrap_or(false) {
+                    if let Some(t) = p.get("text").and_then(Value::as_str) {
+                        if !reasoning.is_empty() {
+                            reasoning.push('\n');
+                        }
+                        reasoning.push_str(t);
+                    }
+                } else if let Some(t) = p.get("text").and_then(Value::as_str) {
+                    text.push_str(t);
+                }
+            }
+        }
+    }
+
+    if !tool_calls.is_empty() && stop != ProviderStop::MaxTokens {
+        stop = ProviderStop::ToolUse;
+    }
+
+    let mut input_tokens = None;
+    let mut output_tokens = None;
+    let mut cached_input_tokens = None;
+    let mut total_tokens = None;
+
+    if let Some(usage) = v.get("usageMetadata") {
+        input_tokens = usage.get("promptTokenCount").and_then(Value::as_u64);
+        output_tokens = usage.get("candidatesTokenCount").and_then(Value::as_u64);
+        cached_input_tokens = usage.get("cachedContentTokenCount").and_then(Value::as_u64);
+        total_tokens = usage.get("totalTokenCount").and_then(Value::as_u64);
+    }
+
+    Ok(LlmResponse {
+        text,
+        tool_calls,
+        stop,
+        input_tokens,
+        input_tokens_overflowed: false,
+        cached_input_tokens,
+        cache_write_tokens: None,
+        output_tokens,
+        total_tokens,
+        reasoning,
+        reasoning_details: None,
+        request_model: None,
+    })
+}
+
+async fn gemini_body(
+    http: &Client,
+    cfg: &Config,
+    system_prompt: &str,
+    history: &[HistoryItem],
+    tools: &[ToolDef],
+    effective_model: &str,
+    effort: Option<ThinkingEffort>,
+) -> Value {
+    let mut tool_info_map = std::collections::HashMap::new();
+    for item in history {
+        if let HistoryItem::Assistant { tool_calls, .. } = item {
+            for tc in tool_calls {
+                let has_sig = tc.provider_extra.contains_key("thoughtSignature")
+                    || tc.provider_extra.contains_key("thought_signature");
+                tool_info_map.insert(tc.provider_id.clone(), (tc.name.clone(), has_sig));
+            }
+        }
+    }
+
+    let mut contents: Vec<Value> = Vec::new();
+    let mut pending_responses: Vec<Value> = Vec::new();
+
+    let flush_pending = |out: &mut Vec<Value>, pending: &mut Vec<Value>| {
+        if !pending.is_empty() {
+            out.push(json!({
+                "role": "user",
+                "parts": std::mem::take(pending),
+            }));
+        }
+    };
+
+    for item in history {
+        match item {
+            HistoryItem::User(text) => {
+                flush_pending(&mut contents, &mut pending_responses);
+                let mut parts: Vec<Value> = Vec::new();
+
+                for url_str in extract_urls(text) {
+                    if let Some((bytes, mime)) = fetch_relay_media(http, &url_str).await {
+                        let encoded = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &bytes,
+                        );
+                        parts.push(json!({
+                            "inlineData": {
+                                "mimeType": mime,
+                                "data": encoded
+                            }
+                        }));
+                    }
+                }
+
+                parts.push(json!({ "text": text }));
+                contents.push(json!({
+                    "role": "user",
+                    "parts": parts,
+                }));
+            }
+            HistoryItem::Assistant {
+                text,
+                tool_calls,
+                reasoning_details: _,
+            } => {
+                flush_pending(&mut contents, &mut pending_responses);
+                let mut parts: Vec<Value> = Vec::new();
+                if !text.is_empty() {
+                    parts.push(json!({ "text": text }));
+                }
+                for tc in tool_calls {
+                    let sig = tc
+                        .provider_extra
+                        .get("thoughtSignature")
+                        .or_else(|| tc.provider_extra.get("thought_signature"));
+
+                    if let Some(s) = sig {
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": tc.name,
+                                "args": tc.arguments,
+                                "id": tc.provider_id,
+                            },
+                            "thoughtSignature": s,
+                        }));
+                    } else if effective_model.starts_with("gemini-3") {
+                        parts.push(json!({
+                            "text": format!("[Tool Call: {}({})]", tc.name, tc.arguments)
+                        }));
+                    } else {
+                        parts.push(json!({
+                            "functionCall": {
+                                "name": tc.name,
+                                "args": tc.arguments,
+                                "id": tc.provider_id,
+                            }
+                        }));
+                    }
+                }
+                if parts.is_empty() {
+                    parts.push(json!({ "text": "" }));
+                }
+                contents.push(json!({
+                    "role": "model",
+                    "parts": parts,
+                }));
+            }
+            HistoryItem::ToolResult(r) => {
+                let info = tool_info_map.get(&r.provider_id);
+                let (tool_name, has_sig) = match info {
+                    Some((name, sig)) => (name.as_str(), *sig),
+                    None => ("unknown_tool", false),
+                };
+
+                let mut result_text = String::new();
+                for c in &r.content {
+                    if !result_text.is_empty() {
+                        result_text.push('\n');
+                    }
+                    result_text.push_str(&c.as_text_lossy());
+                }
+
+                if effective_model.starts_with("gemini-3") && !has_sig {
+                    pending_responses.push(json!({
+                        "text": format!("[Tool Result for {tool_name}: {result_text}]")
+                    }));
+                } else {
+                    pending_responses.push(json!({
+                        "functionResponse": {
+                            "name": tool_name,
+                            "response": {
+                                "output": result_text
+                            }
+                        }
+                    }));
+                }
+            }
+        }
+    }
+    flush_pending(&mut contents, &mut pending_responses);
+
+    let mut tools_list: Vec<Value> = Vec::new();
+    let mut function_declarations: Vec<Value> = Vec::new();
+
+    for t in tools {
+        let mut params = t.input_schema.clone();
+        if let Some(obj) = params.as_object_mut() {
+            obj.remove("$schema");
+        }
+        function_declarations.push(json!({
+            "name": t.name,
+            "description": t.description,
+            "parameters": params,
+        }));
+    }
+
+    if !function_declarations.is_empty() {
+        tools_list.push(json!({
+            "functionDeclarations": function_declarations
+        }));
+    }
+
+    if cfg.gemini_search_grounding {
+        tools_list.push(json!({
+            "googleSearch": {}
+        }));
+    }
+
+    let mut gen_config = json!({
+        "maxOutputTokens": cfg.max_output_tokens,
+    });
+    if let Some(budget) = cfg.gemini_thinking_budget {
+        gen_config["thinkingConfig"] = json!({
+            "thinkingBudget": budget
+        });
+    } else if matches!(effort, Some(ThinkingEffort::None)) {
+        gen_config["thinkingConfig"] = json!({
+            "thinkingBudget": 0
+        });
+    }
+
+    let mut body = json!({
+        "contents": contents,
+        "generationConfig": gen_config,
+    });
+
+    if !system_prompt.trim().is_empty() {
+        body["systemInstruction"] = json!({
+            "parts": [{ "text": system_prompt }]
+        });
+    }
+
+    if !tools_list.is_empty() {
+        body["tools"] = Value::Array(tools_list);
+    }
+
+    body
+}
+
+fn extract_urls(text: &str) -> Vec<String> {
+    let mut urls = Vec::new();
+    for word in text.split_whitespace() {
+        let trimmed = word.trim_matches(|c: char| {
+            !c.is_alphanumeric() && c != '/' && c != ':' && c != '.' && c != '-' && c != '_' && c != '?'
+        });
+        if (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+            && trimmed.contains("/media/")
+        {
+            urls.push(trimmed.to_string());
+        }
+    }
+    urls
+}
+
+fn relay_media_get_auth(url: &reqwest::Url) -> Option<String> {
+    let key = std::env::var("BUZZ_PRIVATE_KEY").ok()?;
+    let keys = match nostr::Keys::parse(&key) {
+        Ok(k) => k,
+        Err(e) => {
+            tracing::warn!("BUZZ_PRIVATE_KEY invalid: {e}");
+            return None;
+        }
+    };
+    let authority = buzz_core::tenant::relay_url_authority(url.as_str());
+    if authority.is_empty() {
+        return None;
+    }
+    sign_media_get_auth(&keys, &authority).ok()
+}
+
+fn sign_media_get_auth(keys: &nostr::Keys, authority: &str) -> Result<String, String> {
+    use nostr::{EventBuilder, JsonUtil, Kind, Tag, Timestamp};
+    let now = Timestamp::now().as_secs();
+    let tags = vec![
+        Tag::parse(["t", "get"]).map_err(|e| e.to_string())?,
+        Tag::parse(["expiration", &(now + 600).to_string()]).map_err(|e| e.to_string())?,
+        Tag::parse(["server", authority]).map_err(|e| e.to_string())?,
+    ];
+    let event = EventBuilder::new(Kind::from(24242), "Get buzz-media")
+        .tags(tags)
+        .sign_with_keys(keys)
+        .map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Nostr {}",
+        base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            event.as_json().as_bytes()
+        )
+    ))
+}
+
+/// Gemini's inline-data ceiling. Media larger than this must go through the
+/// Files API, which this single-turn hydration path does not use, so oversized
+/// media is skipped rather than truncated (a half PDF/image is useless anyway).
+const MAX_INLINE_MEDIA_BYTES: usize = 20 * 1024 * 1024;
+
+/// Whether `url` points at the agent's own configured relay's media store.
+///
+/// The URL is extracted from untrusted message text, so a `/media/` path alone
+/// is not enough — an attacker could aim it at an internal host (SSRF). Require
+/// the URL's authority to equal `BUZZ_RELAY_URL`'s. Fails closed on an empty
+/// relay or host: with no known relay we cannot vouch for any host.
+fn is_configured_relay_media(url: &reqwest::Url, relay_url: &str) -> bool {
+    let relay_authority = buzz_core::tenant::relay_url_authority(relay_url);
+    if relay_authority.is_empty() {
+        return false;
+    }
+    let media_authority = buzz_core::tenant::relay_url_authority(url.as_str());
+    !media_authority.is_empty() && media_authority == relay_authority
+}
+
+async fn fetch_relay_media(http: &Client, url_str: &str) -> Option<(Vec<u8>, &'static str)> {
+    let url = reqwest::Url::parse(url_str).ok()?;
+
+    // SSRF guard: only ever fetch from the agent's own relay (Blossom media
+    // lives there). Fail closed when `BUZZ_RELAY_URL` is unset or the host does
+    // not match — a bare `/media/` path in a user message is not a licence to
+    // GET arbitrary hosts.
+    let relay_url = std::env::var("BUZZ_RELAY_URL").ok()?;
+    if !is_configured_relay_media(&url, &relay_url) {
+        tracing::warn!("Refusing media fetch from non-relay host: {url_str}");
+        return None;
+    }
+
+    let mut req = http
+        .get(url.clone())
+        .timeout(std::time::Duration::from_secs(15));
+    if let Some(auth) = relay_media_get_auth(&url) {
+        req = req.header("Authorization", auth);
+    }
+    let mut res = req.send().await.ok()?;
+    if !res.status().is_success() {
+        tracing::warn!("Failed to fetch media from {}: status {}", url_str, res.status());
+        return None;
+    }
+
+    // Cap the download. Base64-inlining an unbounded body could OOM the agent or
+    // blow past MAX_INLINE_MEDIA_BYTES; reject on an advertised length over the
+    // cap before reading a byte, then enforce the same ceiling while streaming
+    // (a lying or absent Content-Length cannot get past the loop).
+    if res
+        .content_length()
+        .is_some_and(|len| len > MAX_INLINE_MEDIA_BYTES as u64)
+    {
+        tracing::warn!("Media too large to inline: {url_str}");
+        return None;
+    }
+    let content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+
+    let mut bytes: Vec<u8> = Vec::new();
+    loop {
+        match res.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len() + chunk.len() > MAX_INLINE_MEDIA_BYTES {
+                    tracing::warn!("Media exceeded inline cap while downloading: {url_str}");
+                    return None;
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => return None,
+        }
+    }
+
+    let path = url.path();
+    let mime = if path.ends_with(".pdf") || content_type.as_deref() == Some("application/pdf") {
+        "application/pdf"
+    } else if path.ends_with(".png") || content_type.as_deref() == Some("image/png") {
+        "image/png"
+    } else if path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || content_type.as_deref() == Some("image/jpeg")
+    {
+        "image/jpeg"
+    } else if path.ends_with(".webp") || content_type.as_deref() == Some("image/webp") {
+        "image/webp"
+    } else if bytes.starts_with(b"%PDF") {
+        "application/pdf"
+    } else {
+        // Gemini `inlineData` only accepts specific media types; inlining an
+        // octet-stream it will reject just wastes a turn. Leave the link as
+        // plain text instead.
+        tracing::warn!("Unrecognised media type, not inlining: {url_str}");
+        return None;
+    };
+
+    Some((bytes, mime))
+}
+
 async fn read_error_body(mut resp: reqwest::Response) -> String {
     let mut buf: Vec<u8> = Vec::new();
     while buf.len() < MAX_LLM_ERROR_BODY_BYTES {
@@ -2077,7 +2582,7 @@ pub(crate) fn databricks_pkce_config(host: &str) -> PkceOAuthConfig {
 ///   flow; subsequent requests use the cache + refresh transparently.
 pub(crate) fn build_token_source(cfg: &Config) -> Result<Arc<dyn TokenSource>, AgentError> {
     match cfg.provider {
-        Provider::Anthropic | Provider::OpenAi | Provider::OpenRouter => {
+        Provider::Anthropic | Provider::OpenAi | Provider::OpenRouter | Provider::Gemini => {
             Ok(Arc::new(StaticTokenSource::new(cfg.api_key.clone())))
         }
         Provider::Databricks | Provider::DatabricksV2 => {
@@ -2103,9 +2608,11 @@ pub(crate) fn build_token_source(cfg: &Config) -> Result<Arc<dyn TokenSource>, A
 pub(crate) fn summary_completion_cap(provider: Provider, max_output_tokens: u32) -> u32 {
     match provider {
         Provider::OpenRouter => max_output_tokens.saturating_mul(2),
-        Provider::Anthropic | Provider::OpenAi | Provider::Databricks | Provider::DatabricksV2 => {
-            max_output_tokens
-        }
+        Provider::Anthropic
+        | Provider::OpenAi
+        | Provider::Databricks
+        | Provider::DatabricksV2
+        | Provider::Gemini => max_output_tokens,
     }
 }
 
@@ -2624,6 +3131,8 @@ mod tests {
             thinking_effort: None,
             thinking_summary: ThinkingSummary::Auto,
             prompt_caching: true,
+            gemini_search_grounding: false,
+            gemini_thinking_budget: None,
         }
     }
 
@@ -7902,5 +8411,158 @@ mod tests {
             1,
             "exactly one refresh"
         );
+    }
+
+    #[test]
+    fn media_fetch_is_restricted_to_the_configured_relay() {
+        let relay = "wss://relay.example.com";
+        let same_host =
+            reqwest::Url::parse("https://relay.example.com/media/abc.pdf").unwrap();
+        assert!(is_configured_relay_media(&same_host, relay));
+
+        // The SSRF case: a `/media/` URL aimed at an internal host is refused.
+        let internal =
+            reqwest::Url::parse("http://169.254.169.254/media/x.pdf").unwrap();
+        assert!(!is_configured_relay_media(&internal, relay));
+        let other =
+            reqwest::Url::parse("https://evil.example.net/media/x.pdf").unwrap();
+        assert!(!is_configured_relay_media(&other, relay));
+
+        // Fails closed when the relay is unknown.
+        assert!(!is_configured_relay_media(&same_host, ""));
+    }
+
+    #[test]
+    fn parse_gemini_text_and_usage() {
+        let raw = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{ "text": "Hello world!" }]
+                },
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 15,
+                "candidatesTokenCount": 5,
+                "cachedContentTokenCount": 2,
+                "totalTokenCount": 20
+            }
+        });
+
+        let resp = parse_gemini(raw).unwrap();
+        assert_eq!(resp.text, "Hello world!");
+        assert_eq!(resp.stop, ProviderStop::EndTurn);
+        assert_eq!(resp.input_tokens, Some(15));
+        assert_eq!(resp.output_tokens, Some(5));
+        assert_eq!(resp.cached_input_tokens, Some(2));
+        assert_eq!(resp.total_tokens, Some(20));
+        assert!(resp.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn parse_gemini_function_call_and_thought_signature() {
+        let raw = json!({
+            "candidates": [{
+                "content": {
+                    "role": "model",
+                    "parts": [{
+                        "functionCall": {
+                            "name": "get_invoice",
+                            "args": { "invoice_id": "123" },
+                            "id": "call_inv_123"
+                        },
+                        "thoughtSignature": "test_signature_xyz"
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        });
+
+        let resp = parse_gemini(raw).unwrap();
+        assert_eq!(resp.stop, ProviderStop::ToolUse);
+        assert_eq!(resp.tool_calls.len(), 1);
+        let tc = &resp.tool_calls[0];
+        assert_eq!(tc.name, "get_invoice");
+        assert_eq!(tc.provider_id, "call_inv_123");
+        assert_eq!(tc.arguments, json!({ "invoice_id": "123" }));
+        assert_eq!(
+            tc.provider_extra.get("thoughtSignature").and_then(Value::as_str),
+            Some("test_signature_xyz")
+        );
+        assert_eq!(
+            tc.provider_extra.get("thought_signature").and_then(Value::as_str),
+            Some("test_signature_xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn gemini_body_preserves_thought_signature_in_multi_turn() {
+        let mut client_config = cfg(Provider::Gemini);
+        client_config.gemini_search_grounding = true;
+        let http = Client::new();
+
+        let mut tc_extra = Map::new();
+        tc_extra.insert("thoughtSignature".to_string(), json!("sig_abc"));
+
+        let history = vec![
+            HistoryItem::User("What is invoice #123?".into()),
+            HistoryItem::Assistant {
+                text: "".into(),
+                tool_calls: vec![ToolCall {
+                    provider_id: "call_1".into(),
+                    name: "get_invoice".into(),
+                    arguments: json!({ "id": 123 }),
+                    provider_extra: tc_extra,
+                }],
+                reasoning_details: None,
+            },
+            HistoryItem::ToolResult(ToolResult {
+                provider_id: "call_1".into(),
+                content: vec![ToolResultContent::Text("Invoice 123 details".into())],
+                is_error: false,
+            }),
+        ];
+
+        let tools = vec![ToolDef {
+            name: "get_invoice".into(),
+            description: "Get invoice".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": { "id": { "type": "number" } }
+            }),
+        }];
+
+        let body = gemini_body(
+            &http,
+            &client_config,
+            "You are a finance assistant.",
+            &history,
+            &tools,
+            "gemini-3.1-flash-lite",
+            None,
+        )
+        .await;
+
+        let contents = body["contents"].as_array().unwrap();
+        assert_eq!(contents.len(), 3);
+        assert_eq!(contents[0]["role"], "user");
+        assert_eq!(contents[0]["parts"][0]["text"], "What is invoice #123?");
+        assert_eq!(contents[1]["role"], "model");
+        let model_part = &contents[1]["parts"][0];
+        assert_eq!(model_part["functionCall"]["name"], "get_invoice");
+        assert_eq!(model_part["thoughtSignature"], "sig_abc");
+        assert_eq!(contents[2]["role"], "user");
+        let resp_part = &contents[2]["parts"][0];
+        assert_eq!(resp_part["functionResponse"]["name"], "get_invoice");
+        assert_eq!(
+            resp_part["functionResponse"]["response"]["output"],
+            "Invoice 123 details"
+        );
+
+        let tools_arr = body["tools"].as_array().unwrap();
+        assert_eq!(tools_arr.len(), 2);
+        assert!(tools_arr[0].get("functionDeclarations").is_some());
+        assert!(tools_arr[1].get("googleSearch").is_some());
     }
 }

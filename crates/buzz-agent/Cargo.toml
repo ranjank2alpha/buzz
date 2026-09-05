@@ -45,6 +45,8 @@ url = { workspace = true }
 urlencoding = "2"
 webbrowser = "1"
 dirs = "6"
+nostr = { workspace = true }
+buzz-core = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", default-features = false, features = ["signal", "process"] }

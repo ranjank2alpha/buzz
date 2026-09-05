@@ -427,6 +427,9 @@ pub enum Provider {
     DatabricksV2,
     /// OpenRouter multi-provider gateway. Routes to `{base_url}/chat/completions` with bearer auth. Wire format is OpenAI-chat-compatible.
     OpenRouter,
+    /// Google Gemini native REST API. Routes to `{base_url}/models/{model}:generateContent`
+    /// with `x-goog-api-key`. Native multimodal, thinkingConfig, and Google Search.
+    Gemini,
 }
 
 /// Which OpenAI-family HTTP API to call. Set via `OPENAI_COMPAT_API`
@@ -533,17 +536,23 @@ pub struct Config {
     /// Databricks gateway does not auto-cache, so without this the surfaced
     /// `cache_read_input_tokens` is structurally always 0.
     pub prompt_caching: bool,
+    /// Google Search Grounding for Gemini native provider.
+    pub gemini_search_grounding: bool,
+    /// Explicit thinking budget in tokens for Gemini 2.5 / 3.x models.
+    pub gemini_thinking_budget: Option<i32>,
 }
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
         let databricks_host = env("DATABRICKS_HOST");
         let databricks_model = env("DATABRICKS_MODEL");
+        let gemini_key = env("GEMINI_API_KEY").or_else(|| env("GOOGLE_API_KEY"));
         let provider = resolve_provider(
             env("BUZZ_AGENT_PROVIDER").as_deref(),
             env("ANTHROPIC_API_KEY").as_deref(),
             env("OPENAI_COMPAT_API_KEY").as_deref(),
             env("OPENROUTER_API_KEY").as_deref(),
+            gemini_key.as_deref(),
         )?;
 
         // Universal model override — takes priority over provider-specific model
@@ -595,6 +604,18 @@ impl Config {
                 .ok_or_else(|| "config: OPENROUTER_MODEL required".to_string())?,
                 env_or("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
                 OpenAiApi::Chat, // OpenRouter uses Chat Completions only
+            ),
+            Provider::Gemini => (
+                env("GEMINI_API_KEY")
+                    .or_else(|| env("GOOGLE_API_KEY"))
+                    .ok_or_else(|| "config: GEMINI_API_KEY required".to_string())?,
+                resolve_model(
+                    buzz_agent_model.as_deref(),
+                    env("GEMINI_MODEL").as_deref(),
+                )
+                .unwrap_or_else(|| "gemini-2.5-flash".to_string()),
+                env_or("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta"),
+                OpenAiApi::Auto,
             ),
         };
         let system_prompt = match (env("BUZZ_AGENT_SYSTEM_PROMPT"), env("BUZZ_AGENT_SYSTEM_PROMPT_FILE")) {
@@ -649,6 +670,10 @@ impl Config {
                 env("BUZZ_AGENT_THINKING_SUMMARY").as_deref(),
             )?,
             prompt_caching: parse_env("BUZZ_AGENT_PROMPT_CACHING", 1u8)? != 0,
+            gemini_search_grounding: parse_env("GEMINI_SEARCH_GROUNDING", 0u8).unwrap_or(0) != 0
+                || env("GEMINI_SEARCH_GROUNDING").as_deref() == Some("true"),
+            gemini_thinking_budget: env("GEMINI_THINKING_BUDGET")
+                .and_then(|s| s.parse::<i32>().ok()),
         };
         cfg.validate()?;
         Ok(cfg)
@@ -695,6 +720,8 @@ impl Config {
             thinking_effort: None,
             thinking_summary: ThinkingSummary::Auto,
             prompt_caching: false,
+            gemini_search_grounding: false,
+            gemini_thinking_budget: None,
         }
     }
 
@@ -822,6 +849,7 @@ fn resolve_provider(
     anthropic_key: Option<&str>,
     openai_key: Option<&str>,
     openrouter_key: Option<&str>,
+    gemini_key: Option<&str>,
 ) -> Result<Provider, String> {
     match requested.map(str::trim).filter(|s| !s.is_empty()) {
         Some(raw) => {
@@ -839,13 +867,15 @@ fn resolve_provider(
                 "databricks_v2" | "databricks-v2" => Ok(Provider::DatabricksV2),
                 "openrouter" if present_nonempty(openrouter_key) => Ok(Provider::OpenRouter),
                 "openrouter" => Err("config: OPENROUTER_API_KEY required".into()),
+                "gemini" | "google" if present_nonempty(gemini_key) => Ok(Provider::Gemini),
+                "gemini" | "google" => Err("config: GEMINI_API_KEY required".into()),
                 _ => Err(format!(
                     "config: BUZZ_AGENT_PROVIDER={raw} not supported"
                 )),
             }
         }
         None => Err(
-            "config: BUZZ_AGENT_PROVIDER is required — set it to your provider (e.g. anthropic, openai, databricks)".into(),
+            "config: BUZZ_AGENT_PROVIDER is required — set it to your provider (e.g. anthropic, openai, gemini, databricks)".into(),
         ),
     }
 }
@@ -1132,29 +1162,36 @@ mod tests {
     #[test]
     fn resolve_provider_keeps_requested_provider_when_token_present() {
         assert_eq!(
-            resolve_provider(Some("anthropic"), Some("sk-ant"), None, None).unwrap(),
+            resolve_provider(Some("anthropic"), Some("sk-ant"), None, None, None).unwrap(),
             Provider::Anthropic
         );
         assert_eq!(
-            resolve_provider(Some("openai"), None, Some("sk-openai"), None).unwrap(),
+            resolve_provider(Some("openai"), None, Some("sk-openai"), None, None).unwrap(),
             Provider::OpenAi
+        );
+        assert_eq!(
+            resolve_provider(Some("gemini"), None, None, None, Some("AIzaSy...")).unwrap(),
+            Provider::Gemini
         );
     }
 
     #[test]
     fn resolve_provider_errors_when_requested_provider_key_missing() {
         // No fallback — missing key returns an error regardless of Databricks availability.
-        let err = resolve_provider(Some("anthropic"), None, None, None).unwrap_err();
+        let err = resolve_provider(Some("anthropic"), None, None, None, None).unwrap_err();
         assert!(err.contains("ANTHROPIC_API_KEY required"), "{err}");
 
-        let err = resolve_provider(Some("openai-compat"), None, Some("   "), None).unwrap_err();
+        let err = resolve_provider(Some("openai-compat"), None, Some("   "), None, None).unwrap_err();
         assert!(err.contains("OPENAI_COMPAT_API_KEY required"), "{err}");
+
+        let err = resolve_provider(Some("gemini"), None, None, None, None).unwrap_err();
+        assert!(err.contains("GEMINI_API_KEY required"), "{err}");
     }
 
     #[test]
     fn resolve_provider_errors_when_provider_env_absent() {
         // No implicit inference — absent BUZZ_AGENT_PROVIDER is an error.
-        let err = resolve_provider(None, None, None, None).unwrap_err();
+        let err = resolve_provider(None, None, None, None, None).unwrap_err();
         assert!(err.contains("BUZZ_AGENT_PROVIDER is required"), "{err}");
     }
 
@@ -1164,19 +1201,19 @@ mod tests {
         // When BUZZ_AGENT_PROVIDER=databricks, resolve_provider succeeds regardless
         // of DATABRICKS_HOST/MODEL (those are validated later in from_env()).
         assert_eq!(
-            resolve_provider(Some("databricks"), None, None, None).unwrap(),
+            resolve_provider(Some("databricks"), None, None, None, None).unwrap(),
             Provider::Databricks
         );
         // Missing key for other providers still errors — no Databricks fallback.
-        let err = resolve_provider(Some("openai"), None, None, None).unwrap_err();
+        let err = resolve_provider(Some("openai"), None, None, None, None).unwrap_err();
         assert!(err.contains("OPENAI_COMPAT_API_KEY required"), "{err}");
-        let err = resolve_provider(None, None, None, None).unwrap_err();
+        let err = resolve_provider(None, None, None, None, None).unwrap_err();
         assert!(err.contains("BUZZ_AGENT_PROVIDER is required"), "{err}");
     }
 
     #[test]
     fn resolve_provider_unsupported_error_preserves_user_casing() {
-        let err = resolve_provider(Some("OpenAIish"), None, None, None).unwrap_err();
+        let err = resolve_provider(Some("OpenAIish"), None, None, None, None).unwrap_err();
         assert!(err.contains("BUZZ_AGENT_PROVIDER=OpenAIish"));
     }
 
@@ -2174,14 +2211,14 @@ mod tests {
     #[test]
     fn resolve_provider_openrouter_with_key() {
         assert_eq!(
-            resolve_provider(Some("openrouter"), None, None, Some("sk-or-123")).unwrap(),
+            resolve_provider(Some("openrouter"), None, None, Some("sk-or-123"), None).unwrap(),
             Provider::OpenRouter
         );
     }
 
     #[test]
     fn resolve_provider_openrouter_missing_key() {
-        let err = resolve_provider(Some("openrouter"), None, None, None).unwrap_err();
+        let err = resolve_provider(Some("openrouter"), None, None, None, None).unwrap_err();
         assert!(err.contains("OPENROUTER_API_KEY"));
     }
 
