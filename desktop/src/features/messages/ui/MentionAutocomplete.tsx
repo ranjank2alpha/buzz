@@ -1,5 +1,5 @@
 import * as React from "react";
-import { AtSign, Bot, ChevronRight, Megaphone, Pin, Users } from "lucide-react";
+import { Bot, Megaphone, Pin, Users } from "lucide-react";
 import { OtherSetupAgentMarker } from "@/features/agents/ui/OtherSetupAgentMarker";
 import type { TeamMentionMember } from "@/features/messages/lib/mentionCandidates";
 

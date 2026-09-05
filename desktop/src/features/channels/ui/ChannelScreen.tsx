@@ -47,8 +47,6 @@ import { buildMessageComposerEditTarget } from "@/features/messages/lib/draftMen
 import { formatTimelineMessages } from "@/features/messages/lib/formatTimelineMessages";
 import { DeleteMessageConfirmDialog } from "@/features/messages/ui/DeleteMessageConfirmDialog";
 import type { TimelineMessage } from "@/features/messages/types";
-import * as threading from "@/features/messages/lib/threading";
-import { hasPersistedHydratedChannel } from "@/features/messages/lib/channelHeadCache";
 import {
   getThreadReference,
   isThreadReply,

@@ -160,25 +160,6 @@ function getImageLightboxFocusableElements(
   );
 }
 
-function copyImageToClipboard(src: string | undefined) {
-  if (!src) return;
-  invokeTauri("copy_image_to_clipboard", { url: src })
-    .then(() => {
-      toast.success("Copied to clipboard");
-    })
-    .catch((err: unknown) => {
-      const msg = err instanceof Error ? err.message : "Copy failed";
-      toast.error(msg);
-    });
-}
-
-function downloadImage(src: string | undefined) {
-  if (!src) return;
-  invokeTauri("download_image", { url: src }).catch((err: unknown) => {
-    const msg = err instanceof Error ? err.message : "Download failed";
-    toast.error(msg);
-  });
-}
 
 function ImageZoomOverlay({
   alt,
