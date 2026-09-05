@@ -1,13 +1,5 @@
 import type * as React from "react";
-import {
-  BellOff,
-  ChevronDown,
-  CircleDot,
-  FileText,
-  Hash,
-  Lock,
-  X,
-} from "lucide-react";
+import { BellOff, ChevronDown, CircleDot, X } from "lucide-react";
 
 import {
   ContextMenu,
@@ -15,9 +7,11 @@ import {
   ContextMenuTrigger,
 } from "@/shared/ui/context-menu";
 
+import { AgentManagementMarker } from "@/features/agents/ui/OtherSetupAgentMarker";
 import { ChannelContextMenuItems } from "@/features/sidebar/ui/ChannelContextMenu";
 import type { ActiveChannelTurnSummary } from "@/features/agents/activeAgentTurnsStore";
 import { formatElapsed } from "@/features/agents/ui/agentSessionUtils";
+import { ChannelGlyph } from "@/features/channels/ui/ChannelGlyph";
 import { getEphemeralChannelDisplay } from "@/features/channels/lib/ephemeralChannel";
 import { EphemeralChannelBadge } from "@/features/channels/ui/EphemeralChannelBadge";
 import {
@@ -38,10 +32,7 @@ import {
 } from "@/shared/ui/sidebar";
 import { ChannelActivityPopover } from "@/features/sidebar/ui/ChannelActivityPopover";
 import { useAppShell } from "@/app/AppShellContext";
-import {
-  formatSectionUnreadCount,
-  rollUpSectionUnread,
-} from "@/features/sidebar/lib/sectionUnreadRollup.mjs";
+import { UserNameIndicators } from "@/features/user-status/ui/UserNameIndicators";
 
 const SECTION_LABEL_BUTTON_CLASS =
   "group/section-label flex w-fit max-w-[calc(100%-3rem)] cursor-pointer appearance-none items-center gap-1 text-left transition-colors hover:text-sidebar-foreground focus-visible:text-sidebar-foreground";
@@ -91,38 +82,16 @@ function UnreadCountBadge({
   );
 }
 
-/**
- * The "this row needs attention" dot.
- *
- * `isActive` is not cosmetic here. The active row paints `bg-sidebar-active`,
- * which every theme defines as `var(--sidebar-primary)` — the same hue the dot
- * itself used unconditionally (`bg-primary`), so on the channel you currently
- * have open the dot was drawing primary-on-primary and all but disappeared.
- * That is precisely the thread-unread case: you are reading a channel when a
- * reply lands in a thread you do not have open, and the one signal you get is
- * invisible. Active rows therefore switch to the active row's *foreground*
- * color, the same way the muted `BellOff` icon in this file already does.
- *
- * Sized at 10px rather than 8px: it sits at the far end of the row with no
- * adjacent element to give it scale, and 8px read as a rendering artifact more
- * than a deliberate indicator.
- */
 function UnreadDotBadge({
   channelName,
   className,
-  isActive = false,
 }: {
   channelName: string;
   className?: string;
-  isActive?: boolean;
 }) {
   return (
     <span
-      className={cn(
-        "h-2.5 w-2.5 shrink-0 rounded-full",
-        isActive ? "bg-sidebar-active-foreground" : "bg-primary",
-        className,
-      )}
+      className={cn("h-2 w-2 shrink-0 rounded-full bg-primary", className)}
       data-testid={`channel-unread-dot-${channelName}`}
     >
       <span className="sr-only">unread</span>
@@ -186,6 +155,7 @@ function ChannelWorkingBadge({
 export type SidebarDmParticipant = {
   avatarUrl: string | null;
   label: string;
+  isAgent?: boolean;
   pubkey: string;
 };
 
@@ -230,6 +200,7 @@ function DmChannelIcon({
           geometry={DM_AVATAR_STATUS_GEOMETRY}
           iconClassName="h-3.5 w-3.5"
           label={primaryParticipant.label}
+          shape={primaryParticipant.isAgent ? "squircle" : "circle"}
           size={DM_AVATAR_SIZE}
           status={presenceStatus}
           statusTestId={`channel-presence-${channelName}`}
@@ -268,15 +239,7 @@ function SidebarChannelIcon({
     );
   }
 
-  if (channel.visibility === "private") {
-    return <Lock className={cn("h-4 w-4", className)} />;
-  }
-
-  if (channel.channelType === "forum") {
-    return <FileText className={cn("h-4 w-4", className)} />;
-  }
-
-  return <Hash className={cn("h-4 w-4", className)} />;
+  return <ChannelGlyph channel={channel} className={className} />;
 }
 
 export function ChannelMenuButton({
@@ -284,6 +247,7 @@ export function ChannelMenuButton({
   label,
   isActive,
   hasUnread,
+  unreadCount = 0,
   activeWorking,
   isMuted,
   dmParticipants,
@@ -294,6 +258,7 @@ export function ChannelMenuButton({
   label?: string;
   isActive: boolean;
   hasUnread: boolean;
+  unreadCount?: number;
   activeWorking?: ActiveChannelTurnSummary;
   isMuted?: boolean;
   dmParticipants?: SidebarDmParticipant[];
@@ -318,24 +283,21 @@ export function ChannelMenuButton({
     (hasSidebarUnreadProjections
       ? unreadThreadChannelIds.has(channel.id)
       : hasUnread);
-  // Read vs. unread rows are told apart by an actual color change (not just
-  // an opacity toggle on the same base color) so bold/semibold text stays
-  // crisp instead of looking smudgy at 14px. This is applied directly to the
-  // icon + label span (not the button element) because the Buzz theme
-  // overrides the button's `color` via unlayered CSS
-  // (`--buzz-channel-fg`/`--buzz-dm-fg` in theme.css) that would otherwise
-  // beat a Tailwind text-color utility placed on the button itself; setting
-  // color on the button's children sidesteps that entirely, the same way the
-  // previous opacity-based approach did.
-  const inactiveContentColor = cn(
-    !isActive &&
-      !isMuted &&
-      (hasTopLevelUnread ? "text-sidebar-foreground" : "text-muted-foreground"),
+  const showsUnreadCount =
+    !isActive && channel.channelType !== "dm" && unreadCount > 0;
+  const showsEphemeralBadge =
+    Boolean(ephemeralDisplay) &&
+    !activeWorking &&
+    !isMuted &&
+    !showsUnreadCount &&
+    !hasThreadUnread;
+  const inactiveContentOpacity = cn(
+    !isActive && !hasTopLevelUnread && !isMuted && "opacity-80",
     !isActive &&
       isMuted &&
-      (hasTopLevelUnread || hasThreadUnread
-        ? "text-sidebar-foreground"
-        : "text-muted-foreground/60"),
+      !hasTopLevelUnread &&
+      !hasThreadUnread &&
+      "sidebar-muted-content opacity-50 dark:opacity-45",
   );
 
   const button = (
@@ -346,7 +308,7 @@ export function ChannelMenuButton({
           ? "group-hover/menu-item:bg-sidebar-active group-hover/menu-item:text-sidebar-active-foreground"
           : "group-hover/menu-item:bg-sidebar-accent group-hover/menu-item:text-sidebar-foreground",
         hasTopLevelUnread &&
-          "font-semibold text-sidebar-foreground hover:text-sidebar-foreground data-[active=true]:font-semibold",
+          "font-bold text-sidebar-foreground hover:text-sidebar-foreground data-[active=true]:font-bold",
       )}
       data-channel-id={channel.id}
       data-testid={`channel-${channel.name}`}
@@ -358,22 +320,40 @@ export function ChannelMenuButton({
       <SidebarChannelIcon
         channel={channel}
         className={
-          channel.channelType === "dm" ? undefined : inactiveContentColor
+          channel.channelType === "dm" ? undefined : inactiveContentOpacity
         }
         dmParticipants={dmParticipants}
         presenceStatus={presenceStatus}
       />
       <span
-        className={cn("min-w-0 flex-1 truncate", inactiveContentColor)}
+        className={cn(
+          "flex min-w-0 flex-1 items-center gap-1",
+          inactiveContentOpacity,
+        )}
         data-sidebar-row-label
       >
-        {resolvedLabel}
+        <span className="min-w-0 truncate">{resolvedLabel}</span>
+        {channel.channelType === "dm" &&
+        (channel.participantPubkeys.length === 2 ||
+          dmParticipants?.length === 1) ? (
+          <UserNameIndicators
+            className="ml-1"
+            pubkey={dmParticipants?.[0]?.pubkey}
+            size="dm"
+          />
+        ) : null}
       </span>
-      {ephemeralDisplay ? (
+      {showsEphemeralBadge && ephemeralDisplay ? (
         <EphemeralChannelBadge
           display={ephemeralDisplay}
           testId={`channel-ephemeral-${channel.name}`}
           variant="sidebar"
+        />
+      ) : null}
+      {channel.channelType === "dm" && dmParticipants?.length === 1 ? (
+        <AgentManagementMarker
+          pubkey={dmParticipants[0].pubkey}
+          testId={`channel-agent-provenance-${channel.id}`}
         />
       ) : null}
       {activeWorking ? (
@@ -393,22 +373,14 @@ export function ChannelMenuButton({
           )}
         />
       ) : null}
-      {hasThreadUnread ||
-      (hasTopLevelUnread && channel.channelType !== "dm") ? (
-        // One dot covers both signals: `hasThreadUnread` (unread reply inside
-        // a thread) and top-level channel/DM unread. They aren't rendered as
-        // two stacked dots because to the user both mean the same thing —
-        // "this row needs attention" — and a second identical dot would just
-        // read as visual clutter/a bug, not extra information. DMs are
-        // excluded here because they already get a stronger, more specific
-        // signal: the numeric `UnreadCountBadge` rendered in
-        // `SidebarSection` (absolute-positioned top-right on the row); adding
-        // this dot too would duplicate that.
-        <UnreadDotBadge
+      {showsUnreadCount ? (
+        <UnreadCountBadge
           channelName={channel.name}
           className="ml-auto"
-          isActive={isActive}
+          count={unreadCount}
         />
+      ) : hasThreadUnread ? (
+        <UnreadDotBadge channelName={channel.name} className="ml-auto" />
       ) : null}
     </SidebarMenuButton>
   );
@@ -476,30 +448,12 @@ export function SidebarSection({
   onUnmuteChannel?: (channelId: string) => void;
   sectionActionsOpen?: boolean;
 }) {
-  const {
-    highPriorityUnreadChannelIds,
-    topLevelUnreadChannelIds: sectionTopLevelUnreadChannelIds,
-    unreadThreadChannelIds: sectionUnreadThreadChannelIds,
-  } = useAppShell();
-
   if (items.length === 0 && !action && !emptyState) {
     return null;
   }
 
   const contentId = `sidebar-${testId}`;
   const canToggle = Boolean(onToggleCollapsed);
-  // Only while collapsed: an expanded section's rows carry their own badges,
-  // and repeating the total in the header would just be noise.
-  const rollup = isCollapsed
-    ? rollUpSectionUnread({
-        channelIds: items.map((channel) => channel.id),
-        highPriorityUnreadChannelIds,
-        mutedChannelIds,
-        topLevelUnreadChannelIds: sectionTopLevelUnreadChannelIds,
-        unreadChannelCounts,
-        unreadThreadChannelIds: sectionUnreadThreadChannelIds,
-      })
-    : { kind: "none" as const };
 
   return (
     <SidebarGroup
@@ -526,26 +480,6 @@ export function SidebarSection({
                   )}
                 />
               </span>
-              {rollup.kind === "count" ? (
-                <span
-                  className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1 text-2xs font-semibold leading-none text-primary-foreground tabular-nums group-data-[collapsible=icon]:hidden"
-                  data-testid={`${testId}-section-unread-count`}
-                >
-                  {formatSectionUnreadCount(rollup.count)}
-                  <span className="sr-only">
-                    {" "}
-                    unread message{rollup.count === 1 ? "" : "s"} for you
-                  </span>
-                </span>
-              ) : null}
-              {rollup.kind === "dot" ? (
-                <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-full bg-primary group-data-[collapsible=icon]:hidden"
-                  data-testid={`${testId}-section-unread-dot`}
-                >
-                  <span className="sr-only">unread</span>
-                </span>
-              ) : null}
             </button>
           ) : (
             title
@@ -568,6 +502,7 @@ export function SidebarSection({
                       activeWorking={activeWorkingByChannelId?.get(channel.id)}
                       dmParticipants={dmParticipantsByChannelId?.[channel.id]}
                       hasUnread={unreadChannelIds.has(channel.id)}
+                      unreadCount={unreadChannelCounts.get(channel.id) ?? 0}
                       isMuted={mutedChannelIds?.has(channel.id)}
                       isActive={
                         isActiveChannel && selectedChannelId === channel.id

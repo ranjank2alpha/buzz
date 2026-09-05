@@ -316,11 +316,17 @@ export function formatImetaMediaLine(
   const lower = filename?.toLowerCase();
   const isSnapshotPng =
     lower?.endsWith(".agent.png") || lower?.endsWith(".team.png");
+  const isPackagedVoiceNote =
+    type.toLowerCase() === "video/mp4" &&
+    lower?.startsWith("voice-note-") &&
+    lower.endsWith(".mp4");
   // An external attachment is a link to someone else's viewer page, never a
   // byte stream. `<video src="https://drive.google.com/file/d/…/view">` would
   // render as a permanently broken player, so it always takes the link branch
-  // below regardless of what the file actually is.
-  if (!external && type.startsWith("video/")) {
+  // below regardless of what the file actually is. Packaged voice notes get
+  // their own player upstream, so they are excluded from the generic video
+  // branch too.
+  if (!external && type.startsWith("video/") && !isPackagedVoiceNote) {
     const line = `![video](${url})`;
     return options.spoiler ? `\n||${line}||` : `\n${line}`;
   }

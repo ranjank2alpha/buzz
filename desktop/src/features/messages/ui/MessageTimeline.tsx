@@ -21,6 +21,7 @@ import { UnreadPill, unreadCountLabel } from "@/shared/ui/UnreadPill";
 import { ChannelIntroBlock, type ChannelIntro } from "./ChannelIntroBlock";
 import { FileVersionProvider } from "@/shared/context/FileVersionContext";
 import { MessageSelectionProvider } from "./MessageSelectionContext";
+import { MessageTimelineErrorCard } from "./MessageTimelineErrorCard";
 import { TimelineSkeleton, useTimelineSkeletonRows } from "./TimelineSkeleton";
 import { TimelineMessageList } from "./TimelineMessageList";
 import type { TimelineVirtualizerApi } from "./TimelineMessageList";
@@ -62,7 +63,9 @@ type MessageTimelineProps = {
     displayName: string;
     participants: DirectMessageIntroParticipant[];
   } | null;
+  isError?: boolean;
   isLoading?: boolean;
+  onRetry?: () => void;
   entranceMessageId?: string | null;
   onEntranceMessageComplete?: (messageId: string) => void;
   emptyTitle?: string;
@@ -173,7 +176,9 @@ const MessageTimelineBase = React.forwardRef<
     messages,
     mainEntries,
     threadSummaries,
+    isError = false,
     isLoading = false,
+    onRetry,
     entranceMessageId = null,
     onEntranceMessageComplete,
     emptyTitle = "No messages yet",
@@ -309,10 +314,12 @@ const MessageTimelineBase = React.forwardRef<
   const timelineBodySurface = selectTimelineBodySurface({
     deferredCount: deferredMessages.length,
     preserveSettledEmptyIntro,
+    isError,
     isLoading: timelineIsLoading,
     liveCount: messages.length,
   });
   const showTimelineSkeleton = timelineBodySurface === "skeleton";
+  const showTimelineError = timelineBodySurface === "error";
   const [isSemanticallyAtBottom, setIsSemanticallyAtBottom] =
     React.useState(true);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset semantic tail state when the active channel changes
@@ -435,15 +442,17 @@ const MessageTimelineBase = React.forwardRef<
     [onVirtualizerAtBottomStateChange, queueSemanticBottom],
   );
 
-  const timelineIntroSurface = selectTimelineIntroSurface({
-    hasChannelIntro: channelIntro !== null && directMessageIntro === null,
-    hasDirectMessageIntro: directMessageIntro !== null,
-    hasReachedChannelStart:
-      !isRenderedTimelineBehindHistoryPrepend(deferredMessages, messages) &&
-      !isHoldingPrepend &&
-      (messages.length === 0 || (!hasOlderMessages && !isFetchingOlder)),
-    isSkeletonVisible: showTimelineSkeleton,
-  });
+  const timelineIntroSurface = showTimelineError
+    ? null
+    : selectTimelineIntroSurface({
+        hasChannelIntro: channelIntro !== null && directMessageIntro === null,
+        hasDirectMessageIntro: directMessageIntro !== null,
+        hasReachedChannelStart:
+          !isRenderedTimelineBehindHistoryPrepend(deferredMessages, messages) &&
+          !isHoldingPrepend &&
+          (messages.length === 0 || (!hasOlderMessages && !isFetchingOlder)),
+        isSkeletonVisible: showTimelineSkeleton,
+      });
   const showDirectMessageIntro =
     timelineIntroSurface === "direct-message-intro";
   const showChannelIntro = timelineIntroSurface === "channel-intro";
@@ -728,14 +737,11 @@ const MessageTimelineBase = React.forwardRef<
               </div>
             ) : null}
             {/* `isFetchingOlder` clears on fetch resolve, but rows paint a frame
-            later (deferred snapshot / settle-gate hold) — keep the spinner up
-            until the page actually renders. */}
+                later (deferred snapshot / settle-gate hold) — keep the spinner up
+                until the page actually renders. */}
             {isFetchingOlder ||
             isHoldingPrepend ||
-            isRenderedTimelineBehindHistoryPrepend(
-              deferredMessages,
-              messages,
-            ) ? (
+            isRenderedTimelineBehindHistoryPrepend(deferredMessages, messages) ? (
               <div
                 className={cn(
                   "pointer-events-none absolute inset-x-0 z-30 flex justify-center px-4",
@@ -786,7 +792,10 @@ const MessageTimelineBase = React.forwardRef<
                     showChannelIntroOnly
                       ? "pt-[var(--channel-top-chrome-height,4.5rem)]"
                       : channelChrome.contentPadding,
-                    (showIntro || showGenericEmpty || showMessageList) &&
+                    (showIntro ||
+                      showTimelineError ||
+                      showGenericEmpty ||
+                      showMessageList) &&
                       "min-h-full",
                   )}
                   ref={contentRef}
@@ -796,18 +805,17 @@ const MessageTimelineBase = React.forwardRef<
                   )}
 
                   {/* Fixed-height history slot keeps the virtual spacer's offset
-                  stable across load-older fetches. The intro-only state has no
-                  history to anchor, so omitting it matches the virtualized
-                  leading row's top geometry when the first message arrives. */}
-                  {omitHistoryLeadIn ? null : (
-                    <div aria-hidden className="h-8" />
-                  )}
+                      stable across load-older fetches. The intro-only state has no
+                      history to anchor, so omitting it matches the virtualized
+                      leading row's top geometry when the first message arrives. */}
+                  {omitHistoryLeadIn ? null : <div aria-hidden className="h-8" />}
 
                   <div
                     className={cn(
                       "flex min-h-[18rem] min-w-0 flex-col gap-2",
                       useTimelineVirtualizer && "min-h-0 flex-1",
-                      (showIntro || showGenericEmpty) && "min-h-full",
+                      (showIntro || showTimelineError || showGenericEmpty) &&
+                        "min-h-full",
                       showMessageList &&
                         !showIntro &&
                         !useTimelineVirtualizer &&
@@ -816,6 +824,9 @@ const MessageTimelineBase = React.forwardRef<
                   >
                     {showTimelineSkeleton ? (
                       <TimelineSkeleton rows={timelineSkeletonRows} />
+                    ) : null}
+                    {showTimelineError ? (
+                      <MessageTimelineErrorCard onRetry={onRetry} />
                     ) : null}
                     {activeDirectMessageIntro ? (
                       <div
@@ -844,7 +855,7 @@ const MessageTimelineBase = React.forwardRef<
 
                     {activeChannelIntro ? (
                       /* Top-anchored like the virtualized leading row, so the
-                     first message arrives below with zero layout shift. */
+                         first message arrives below with zero layout shift. */
                       <ChannelIntroBlock
                         className="py-2"
                         intro={activeChannelIntro}
@@ -872,9 +883,7 @@ const MessageTimelineBase = React.forwardRef<
                           !showIntro && !useTimelineVirtualizer && "mt-auto",
                           useTimelineVirtualizer && "min-h-0 flex-1",
                         )}
-                        data-render-pending={
-                          isRenderPending ? "true" : undefined
-                        }
+                        data-render-pending={isRenderPending ? "true" : undefined}
                       >
                         {timelineList}
                       </div>
@@ -888,10 +897,10 @@ const MessageTimelineBase = React.forwardRef<
               <div
                 className={cn(
                   "pointer-events-none absolute inset-x-0 bottom-4 z-50 flex justify-center px-4",
-                  // Position the pill with layout rather than a transform.
-                  // WebKit can keep an inherited custom property stale on a
-                  // promoted transform layer when the composer grows, leaving
-                  // the pill stranded inside the dock.
+                  // Position the pill with layout rather than a transform. WebKit
+                  // can keep an inherited custom property stale on a promoted
+                  // transform layer when the composer grows, leaving the pill
+                  // stranded inside the dock.
                   hasComposerOverlay &&
                     "bottom-[calc(1rem+var(--composer-overlay-height,8rem))] transition-[bottom] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
                 )}
