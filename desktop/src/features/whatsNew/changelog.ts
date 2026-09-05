@@ -213,6 +213,14 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "When the media server is temporarily unavailable, files now upload to your Google Drive automatically instead of failing (connect Google Drive under Settings → Voice)",
     ],
   },
+  {
+    version: "0.5.22-1",
+    date: "2026-09-05",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.22: status and huddle indicators beside names, mention-count badges in the sidebar, desktop voice notes, and a range of composer, media, and stability fixes",
+      "Files that a teammate shares are recognised and previewed for you here as before — your in-app document viewer is unchanged",
+    ],
+  },
 ];
 
 /**
