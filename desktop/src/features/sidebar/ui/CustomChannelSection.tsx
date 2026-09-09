@@ -358,7 +358,6 @@ export function ChannelGroupSection({
   onSortModeChange,
   actionsTestId,
   title,
-  unreadChannelCounts: _unreadChannelCounts,
   unreadChannelIds,
   sections,
   assignments,
@@ -406,7 +405,6 @@ export function ChannelGroupSection({
   onSortModeChange?: (mode: ChannelSortMode) => void;
   actionsTestId?: string;
   title: string;
-  unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
   hasUnread?: boolean;
   onMarkAllRead?: () => void;
@@ -546,7 +544,6 @@ export function CustomChannelSection({
   isActiveChannel,
   activeWorkingByChannelId,
   selectedChannelId,
-  unreadChannelCounts: _unreadChannelCounts,
   unreadChannelIds,
   sections,
   assignments,
@@ -583,7 +580,6 @@ export function CustomChannelSection({
   isActiveChannel: boolean;
   activeWorkingByChannelId?: ReadonlyMap<string, ActiveChannelTurnSummary>;
   selectedChannelId: string | null;
-  unreadChannelCounts: ReadonlyMap<string, number>;
   unreadChannelIds: ReadonlySet<string>;
   sections: ChannelSection[];
   assignments: Record<string, string>;

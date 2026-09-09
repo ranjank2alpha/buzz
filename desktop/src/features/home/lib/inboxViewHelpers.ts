@@ -198,6 +198,7 @@ export function toInboxContextMessage(
   const { mentionNames, mentionPubkeysByName } = resolveMentionProps(
     message.tags ?? [],
     context.profiles,
+    message.body,
   );
   return {
     id: message.id,

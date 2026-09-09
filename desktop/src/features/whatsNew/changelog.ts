@@ -230,6 +230,16 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Files that a teammate shares are recognised and previewed for you here as before — your in-app document viewer is unchanged",
     ],
   },
+  {
+    version: "0.5.23-1",
+    date: "2026-09-09",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.23: mentions now survive copy and paste, mention identity icons are back, and duplicate names resolve to the exact person you picked",
+      "Sidebar unread indicators are simpler and now emphasise the activity that needs you",
+      "Repeated join messages collapse into one line, and video remembers your playback speed",
+      "Your Windows toast notifications, Google Drive upload fallback, and in-app document viewer are unchanged",
+    ],
+  },
 ];
 
 /**

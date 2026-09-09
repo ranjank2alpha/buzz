@@ -6,6 +6,7 @@ import {
   selectTimelineBodySurface,
   selectTimelineIntroSurface,
 } from "@/features/messages/lib/timelineSnapshot";
+import { handleTimelineMentionCopy } from "@/features/messages/lib/timelineMentionCopy";
 import { preloadTimelineImages } from "@/features/messages/lib/timelineImagePreload";
 import type { TimelineMessage } from "@/features/messages/types";
 import type { MainTimelineEntry } from "@/features/messages/lib/threadPanel";
@@ -720,7 +721,10 @@ const MessageTimelineBase = React.forwardRef<
     <MessageSelectionProvider channelId={channelId}>
       <FileVersionProvider channelId={channelId} jumpToMessage={jumpToMessage}>
         <TooltipProvider>
-          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+          <div
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+            onCopy={handleTimelineMentionCopy}
+          >
             {showUnreadPill ? (
               <div
                 className={cn(
@@ -893,7 +897,9 @@ const MessageTimelineBase = React.forwardRef<
               )}
             </div>
 
-            {!isAtBottom ? (
+            {/* A frozen tail can be physically at bottom while live rows are still
+                buffered. Keep the release action reachable in that state. */}
+            {!isAtBottom || bufferedTimeline.pendingCount > 0 ? (
               <div
                 className={cn(
                   "pointer-events-none absolute inset-x-0 bottom-4 z-50 flex justify-center px-4",
