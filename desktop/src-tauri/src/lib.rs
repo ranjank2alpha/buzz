@@ -94,7 +94,6 @@ use std::sync::{atomic::AtomicBool, atomic::Ordering, Arc};
 use tauri::Listener;
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
-#[cfg(target_os = "macos")]
 use tray_menu::show_main_window;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -123,10 +122,8 @@ pub fn run() {
     }
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // Focus the existing window when a duplicate instance launches.
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.set_focus();
-            }
+            // Focus and reveal the existing window when a duplicate instance launches.
+            show_main_window(app);
             // Forward any deep link URLs from the duplicate launch.
             for arg in &argv {
                 if crate::build_identity::is_deep_link_for_build(arg) {

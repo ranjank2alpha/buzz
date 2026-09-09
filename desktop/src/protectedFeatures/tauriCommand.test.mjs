@@ -21,10 +21,11 @@ const args = process.argv.slice(2);
 const configIndex = args.lastIndexOf("--config");
 const override = JSON.parse(args[configIndex + 1]);
 const output = override.build.frontendDist;
-mkdirSync(output, { recursive: true });
-writeFileSync(path.join(output, "variant.txt"), process.env.VITE_BUZZ_BESTIE);
+const targetDir = path.isAbsolute(output) ? output : path.resolve("src-tauri", output);
+mkdirSync(targetDir, { recursive: true });
+writeFileSync(path.join(targetDir, "variant.txt"), process.env.VITE_BUZZ_BESTIE);
 await new Promise((resolve) => setTimeout(resolve, 100));
-const observed = readFileSync(path.join(output, "variant.txt"), "utf8");
+const observed = readFileSync(path.join(targetDir, "variant.txt"), "utf8");
 writeFileSync(
   process.env.BUZZ_TEST_RESULT,
   JSON.stringify({ args, output, observed }),

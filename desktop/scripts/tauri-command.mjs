@@ -36,11 +36,23 @@ export function runTauriCommand(args) {
   // Tauri runs beforeBuildCommand and then consumes frontendDist. Give the
   // entire invocation a private directory so concurrent OSS/internal packages
   // cannot replace one another's assets between those two operations.
+  //
+  // Use a relative path from `src-tauri` rather than an absolute path: on
+  // Windows, any absolute path (e.g. `C:\...`) is parsed by Tauri's serde
+  // deserializer as `FrontendDist::Url`, causing Tauri to skip embedding
+  // assets into the binary and navigate WebView to the temporary directory.
   const invocationRoot = mkdtempSync(
-    path.join(tmpdir(), "buzz-tauri-package-assets-"),
+    path.join(desktopRoot, ".buzz-tauri-package-assets-"),
   );
   const frontendDist = path.join(invocationRoot, "dist");
-  const outputOverride = JSON.stringify({ build: { frontendDist } });
+  const tauriRoot = path.join(desktopRoot, "src-tauri");
+  const relativeFrontendDist = path
+    .relative(tauriRoot, frontendDist)
+    .split(path.sep)
+    .join("/");
+  const outputOverride = JSON.stringify({
+    build: { frontendDist: relativeFrontendDist },
+  });
 
   try {
     const delimiterIndex = args.indexOf("--");

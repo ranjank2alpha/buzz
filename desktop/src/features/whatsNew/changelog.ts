@@ -221,6 +221,15 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Files that a teammate shares are recognised and previewed for you here as before — your in-app document viewer is unchanged",
     ],
   },
+  {
+    version: "0.5.22-2",
+    date: "2026-09-06",
+    bullets: [
+      "Fixed an issue on Windows where the desktop app failed on launch with a blank screen or ERR_FILE_NOT_FOUND",
+      "Caught up to upstream Buzz 0.5.22: status and huddle indicators beside names, mention-count badges in the sidebar, desktop voice notes, and a range of composer, media, and stability fixes",
+      "Files that a teammate shares are recognised and previewed for you here as before — your in-app document viewer is unchanged",
+    ],
+  },
 ];
 
 /**
