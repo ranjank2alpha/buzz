@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  cleanCaption,
   collectChannelLinkEntries,
   extractMessageLinkLabels,
   extractMessageLinks,
+  isGoogleUrl,
   linkHost,
+  linkKind,
   normalizeLinkKey,
   readableLinkName,
 } from "./channelLinkEntries.mjs";
@@ -67,22 +70,22 @@ test("ignores non-http schemes and plain text", () => {
 
 test("names google surfaces by kind rather than by opaque id", () => {
   const cases = [
-    ["https://docs.google.com/document/d/1a2B3c4D5e6F7g8H/edit", "Google Doc"],
+    ["https://docs.google.com/document/d/1a2B3c4D5e6F7g8H/edit", "Doc"],
     [
       "https://docs.google.com/spreadsheets/d/1a2B3c4D5e6F7g8H/edit#gid=0",
-      "Google Sheet",
+      "Sheet",
     ],
     [
       "https://docs.google.com/presentation/d/1a2B3c4D5e6F7g8H/edit",
-      "Google Slides",
+      "Slides",
     ],
     [
       "https://drive.google.com/file/d/1a2B3c4D5e6F7g8H/view",
-      "Google Drive file",
+      "File",
     ],
     [
       "https://drive.google.com/drive/folders/1a2B3c4D5e6F7g8H",
-      "Google Drive folder",
+      "Folder",
     ],
   ];
   for (const [url, expected] of cases) {
@@ -94,7 +97,7 @@ test("never returns a bare drive id", () => {
   const name = readableLinkName(
     "https://drive.google.com/file/d/1a2B3c4D5e6F7g8H9i/view",
   );
-  assert.equal(name, "Google Drive file");
+  assert.equal(name, "File");
   assert.ok(!name.includes("1a2B3c"));
 });
 
@@ -155,7 +158,7 @@ test("a markdown label is read as the link's name", () => {
 
 test("the label beats the Google-surface fallback", () => {
   const url = "https://docs.google.com/document/d/1a2B3c4D5e6F7g8H/edit";
-  assert.equal(readableLinkName(url), "Google Doc");
+  assert.equal(readableLinkName(url), "Doc");
   const [entry] = collectChannelLinkEntries({
     messages: [message({ content: `[Board notes](${url})` })],
     excludedUrls: [],
@@ -279,6 +282,7 @@ test("entries carry the link shape the files list expects", () => {
     size: null,
     mime: null,
     url: "https://example.com/reports/q3.pdf",
+    note: null,
     supersedes: null,
     supersededBy: null,
   });
@@ -354,3 +358,81 @@ test("empty and malformed input is tolerated", () => {
     [],
   );
 });
+
+// --- caption cleaning --------------------------------------------------------
+
+test("cleanCaption removes markdown links, images, bare urls and trims whitespace", () => {
+  assert.equal(
+    cleanCaption("Here is the deck [deck](https://example.com) for review"),
+    "Here is the deck for review",
+  );
+  assert.equal(
+    cleanCaption("Photo ![alt](https://example.com/img.png) attached https://example.com/doc"),
+    "Photo attached",
+  );
+  assert.equal(
+    cleanCaption("   Multiple   spaces    collapsed   "),
+    "Multiple spaces collapsed",
+  );
+  assert.equal(cleanCaption("https://example.com"), null);
+  assert.equal(cleanCaption("[only a link](https://example.com)"), null);
+  assert.equal(cleanCaption(""), null);
+  assert.equal(cleanCaption(null), null);
+  assert.equal(cleanCaption(undefined), null);
+});
+
+// --- url classification -----------------------------------------------------
+
+test("isGoogleUrl correctly detects Google domains", () => {
+  assert.equal(isGoogleUrl("https://google.com/test"), true);
+  assert.equal(isGoogleUrl("https://drive.google.com/drive/folders/123"), true);
+  assert.equal(isGoogleUrl("https://docs.google.com/document/d/123"), true);
+  assert.equal(isGoogleUrl("https://deep.sub.google.com/path"), true);
+  assert.equal(isGoogleUrl("https://notgoogle.com"), false);
+  assert.equal(isGoogleUrl("https://google.com.attacker.com"), false);
+  assert.equal(isGoogleUrl("not-a-url"), false);
+  assert.equal(isGoogleUrl(null), false);
+});
+
+test("linkKind classifies folders, slides, sheets, docs, and generic links", () => {
+  assert.equal(
+    linkKind("https://drive.google.com/drive/folders/folder-id"),
+    "folder",
+  );
+  assert.equal(
+    linkKind("https://drive.google.com/file/d/file-id/view"),
+    "doc",
+  );
+  assert.equal(
+    linkKind("https://docs.google.com/presentation/d/deck-id"),
+    "slides",
+  );
+  assert.equal(
+    linkKind("https://docs.google.com/spreadsheets/d/sheet-id"),
+    "sheet",
+  );
+  assert.equal(
+    linkKind("https://docs.google.com/document/d/doc-id"),
+    "doc",
+  );
+  assert.equal(
+    linkKind("https://example.com/page"),
+    "link",
+  );
+  assert.equal(linkKind("invalid"), "link");
+  assert.equal(linkKind(null), "link");
+});
+
+test("collectChannelLinkEntries attaches cleaned note from content", () => {
+  const [entry] = collectChannelLinkEntries({
+    messages: [
+      message({
+        content: "Draft Q3 slides https://drive.google.com/file/d/123/view",
+        pubkey: "author",
+      }),
+    ],
+    excludedUrls: [],
+  });
+  assert.equal(entry.note, "Draft Q3 slides");
+});
+

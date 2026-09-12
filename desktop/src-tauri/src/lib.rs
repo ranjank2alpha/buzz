@@ -563,6 +563,7 @@ pub fn run() {
             google_meet::disconnect_google_meet_account,
             google_meet::create_instant_google_meet,
             google_meet::drive::get_google_drive_status,
+            google_meet::drive::create_drive_batch_folder,
             google_meet::drive::upload_drive_bytes_raw,
             title_bar_double_click,
             get_identity,

@@ -10,6 +10,11 @@ export type DriveUpload = {
   webViewLink: string;
 };
 
+export type DriveBatchFolder = {
+  id: string;
+  webViewLink: string;
+};
+
 /**
  * Base64url, matching `decode_header` in `google_meet/drive.rs`.
  *
@@ -39,6 +44,16 @@ export async function getGoogleDriveStatus(): Promise<boolean> {
 }
 
 /**
+ * Create a new folder inside the sender's "Buzz uploads" folder for a batch
+ * of files, shared with anyone with the link.
+ */
+export async function createDriveBatchFolder(
+  name: string,
+): Promise<DriveBatchFolder> {
+  return invokeTauri<DriveBatchFolder>("create_drive_batch_folder", { name });
+}
+
+/**
  * Upload a file to the sender's own Drive and return a shareable link.
  *
  * Bytes cross the IPC boundary raw rather than as JSON, the same transport
@@ -48,6 +63,7 @@ export async function getGoogleDriveStatus(): Promise<boolean> {
 export async function uploadFileToDrive(
   file: File,
   progressId?: string,
+  parentId?: string,
 ): Promise<DriveUpload> {
   const headers: Record<string, string> = {
     "x-buzz-filename": encodeRawIpcHeader(file.name),
@@ -55,6 +71,9 @@ export async function uploadFileToDrive(
   };
   if (progressId) {
     headers["x-buzz-progress-id"] = encodeRawIpcHeader(progressId);
+  }
+  if (parentId) {
+    headers["x-buzz-parent-id"] = encodeRawIpcHeader(parentId);
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());

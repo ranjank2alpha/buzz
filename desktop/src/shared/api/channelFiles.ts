@@ -1,6 +1,9 @@
 import { getChannelMessagesBefore } from "./tauriChannels";
 import { getThreadReplies } from "./tauri";
-import { collectChannelLinkEntries } from "@/shared/lib/channelLinkEntries.mjs";
+import {
+  cleanCaption,
+  collectChannelLinkEntries,
+} from "@/shared/lib/channelLinkEntries.mjs";
 import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 import { SUPERSEDES_MARKER, SUPERSEDES_SUBJECT_MARKER } from "./supersedesTags";
 import type { ChannelPageCursor, RelayEvent, ThreadCursor } from "./types";
@@ -150,6 +153,11 @@ export type ChannelFileEntry = {
   mime: string | null;
   /** The imeta `url` tag verbatim — same value FileCard/FilePreviewModal use. */
   url: string | null;
+  /**
+   * Sender's caption on the message: content stripped of markdown links,
+   * image embeds, and bare URLs, whitespace-collapsed, null if empty.
+   */
+  note: string | null;
   /** event_id of the file this one was tagged as a new version of, if any. */
   supersedes: string | null;
   /** event_id of a later upload tagged as superseding this one, if any. */
@@ -330,6 +338,7 @@ export async function listChannelFiles(
       if (declaration) linkDeclarations.push(declaration);
       continue; // not a file-bearing message
     }
+    const note = cleanCaption(event.content);
     for (const entry of imetaEntries.values()) {
       files.push({
         kind: "file",
@@ -341,6 +350,7 @@ export async function listChannelFiles(
         size: Number.isFinite(entry.size) ? entry.size : null,
         mime: entry.m ?? null,
         url: entry.url ?? null,
+        note,
         supersedes,
         supersededBy: null, // back-filled below
       });
@@ -409,6 +419,9 @@ export async function listChannelFiles(
       file.supersededBy = null;
     }
   }
+
+  // Sort all entries newest first so files and links interleave chronologically.
+  files.sort((a, b) => (b.uploadedAt ?? 0) - (a.uploadedAt ?? 0));
 
   return files;
 }

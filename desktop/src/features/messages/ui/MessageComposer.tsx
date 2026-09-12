@@ -55,6 +55,7 @@ import { focusMentionOptionsTrigger } from "./MentionAutocomplete";
 import { MessageComposerAutocompletes } from "./MessageComposerAutocompletes";
 import { ComposerDockToolbar } from "./ComposerDockToolbar";
 import { ComposerUploadProgressPill } from "./ComposerUploadProgressPill";
+import { DriveUploadConfirmDialog } from "./DriveUploadConfirmDialog";
 import { NonMemberMentionDialog } from "./NonMemberMentionDialog";
 import { useComposerVoiceNote } from "./useComposerVoiceNote";
 import { useMentionSendFlow } from "./useMentionSendFlow";
@@ -1111,6 +1112,7 @@ function MessageComposerImpl({
       />
       {linkEditor.card}
       {linkEditor.dialog}
+      <DriveUploadConfirmDialog request={media.driveConfirm} />
     </>
   );
 }

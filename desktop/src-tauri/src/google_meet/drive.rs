@@ -82,6 +82,14 @@ pub(crate) struct DriveUpload {
     pub web_view_link: String,
 }
 
+/// A created Google Drive batch folder.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DriveBatchFolder {
+    pub id: String,
+    pub web_view_link: String,
+}
+
 /// Drop the cached folder id. Called on disconnect, because the folder belongs
 /// to the account that is going away.
 pub(crate) fn forget_uploads_folder() {
@@ -314,6 +322,66 @@ pub(crate) async fn get_google_drive_status(
     }
 }
 
+/// Create a new batch folder inside "Buzz uploads" and make it accessible.
+#[tauri::command]
+pub(crate) async fn create_drive_batch_folder(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<DriveBatchFolder, String> {
+    let token = google_access_token(&state).await?;
+    if !token.has_scope(GOOGLE_DRIVE_SCOPE) {
+        return Err(
+            "Your Google account is connected for Meet but not for Drive. Disconnect and reconnect it under Settings → Voice to allow Drive uploads."
+                .to_owned(),
+        );
+    }
+
+    let parent_id = ensure_uploads_folder(&state, &token).await?;
+    let created = state
+        .http_client
+        .post(format!("{DRIVE_API_BASE}/files"))
+        .bearer_auth(&token.access_token)
+        .query(&[("fields", "id,name,webViewLink")])
+        .json(&serde_json::json!({
+            "name": name,
+            "mimeType": DRIVE_FOLDER_MIME,
+            "parents": [parent_id],
+        }))
+        .send()
+        .await
+        .map_err(|error| format!("could not create the batch folder: {error}"))?;
+    if !created.status().is_success() {
+        let body = created.text().await.unwrap_or_default();
+        return Err(format!("could not create the batch folder: {body}"));
+    }
+    let folder: DriveFile = created
+        .json()
+        .await
+        .map_err(|error| format!("invalid Google Drive response: {error}"))?;
+
+    let folder_id = folder.id;
+    let web_view_link = folder.web_view_link.unwrap_or_else(|| {
+        format!("https://drive.google.com/drive/folders/{folder_id}")
+    });
+
+    // Best-effort public reader permission so recipients can open the link
+    let _ = state
+        .http_client
+        .post(format!("{DRIVE_API_BASE}/files/{folder_id}/permissions"))
+        .bearer_auth(&token.access_token)
+        .json(&serde_json::json!({
+            "role": "reader",
+            "type": "anyone",
+        }))
+        .send()
+        .await;
+
+    Ok(DriveBatchFolder {
+        id: folder_id,
+        web_view_link,
+    })
+}
+
 /// Upload raw IPC bytes to the sender's Drive and return a shareable link.
 ///
 /// Mirrors `upload_media_bytes_raw`'s raw-byte transport so a large file is
@@ -335,6 +403,7 @@ pub(crate) async fn upload_drive_bytes_raw(
         .filter(|mime| !mime.trim().is_empty())
         .unwrap_or_else(|| "application/octet-stream".to_owned());
     let progress_id = optional_header(&request, "x-buzz-progress-id")?;
+    let parent_id = optional_header(&request, "x-buzz-parent-id")?;
 
     let token = google_access_token(&state).await?;
     if !token.has_scope(GOOGLE_DRIVE_SCOPE) {
@@ -344,7 +413,10 @@ pub(crate) async fn upload_drive_bytes_raw(
         );
     }
 
-    let folder_id = ensure_uploads_folder(&state, &token).await?;
+    let folder_id = match parent_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => id,
+        None => ensure_uploads_folder(&state, &token).await?,
+    };
     let session_uri =
         begin_resumable_session(&state, &token, &filename, &mime, data.len(), &folder_id).await?;
     let file = put_chunks(&state, &app, &session_uri, &data, progress_id.as_deref()).await?;

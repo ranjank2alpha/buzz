@@ -240,6 +240,15 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Your Windows toast notifications, Google Drive upload fallback, and in-app document viewer are unchanged",
     ],
   },
+  {
+    version: "0.5.23-2",
+    date: "2026-09-12",
+    bullets: [
+      "Google Drive upload choices: when sending batches with large files, choose between sharing a single folder link or separate per-file links",
+      "Confirmation dialog before uploading large files, video, audio, or programs to Google Drive",
+      "Automatic folder creation in your Google Drive with public reader access for effortless recipient sharing",
+    ],
+  },
 ];
 
 /**

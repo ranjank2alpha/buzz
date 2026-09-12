@@ -99,20 +99,66 @@ function googleSurfaceLabel(parsed) {
   const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
   const path = parsed.pathname.toLowerCase();
   if (host === "docs.google.com") {
-    if (path.startsWith("/document")) return "Google Doc";
-    if (path.startsWith("/spreadsheets")) return "Google Sheet";
-    if (path.startsWith("/presentation")) return "Google Slides";
-    if (path.startsWith("/forms")) return "Google Form";
-    if (path.startsWith("/drawings")) return "Google Drawing";
-    return "Google Docs file";
+    if (path.startsWith("/document")) return "Doc";
+    if (path.startsWith("/spreadsheets")) return "Sheet";
+    if (path.startsWith("/presentation")) return "Slides";
+    if (path.startsWith("/forms")) return "Form";
+    if (path.startsWith("/drawings")) return "Drawing";
+    return "Doc";
   }
   if (host === "drive.google.com") {
     return path.includes("/folders")
-      ? "Google Drive folder"
-      : "Google Drive file";
+      ? "Folder"
+      : "File";
   }
-  if (host === "meet.google.com") return "Google Meet link";
+  if (host === "meet.google.com") return "Meet";
   return null;
+}
+
+/**
+ * True if a URL's hostname is `google.com` or any subdomain `*.google.com`.
+ */
+export function isGoogleUrl(url) {
+  const parsed = parseUrl(url);
+  if (!parsed) return false;
+  const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+  return host === "google.com" || host.endsWith(".google.com");
+}
+
+/**
+ * Classify a link URL into "folder", "slides", "sheet", "doc", or "link".
+ */
+export function linkKind(url) {
+  const parsed = parseUrl(url);
+  if (!parsed) return "link";
+  const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+  const path = parsed.pathname.toLowerCase();
+  if (host === "drive.google.com") {
+    return path.includes("/folders") ? "folder" : "doc";
+  }
+  if (host === "docs.google.com") {
+    if (path.startsWith("/presentation")) return "slides";
+    if (path.startsWith("/spreadsheets")) return "sheet";
+    if (path.startsWith("/document")) return "doc";
+    return "doc";
+  }
+  return "link";
+}
+
+/**
+ * Strip markdown links [..](..), image embeds ![..](..), and bare URLs from
+ * message content, collapsing whitespace and returning the trimmed caption,
+ * or null if empty.
+ */
+export function cleanCaption(content) {
+  if (typeof content !== "string" || content === "") return null;
+  const stripped = content
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/https?:\/\/[^\s<>"'`\]]+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return stripped === "" ? null : stripped;
 }
 
 /**
@@ -291,6 +337,7 @@ export function collectChannelLinkEntries({ messages, excludedUrls }) {
       size: null,
       mime: null,
       url: message.url,
+      note: cleanCaption(message.content),
       supersedes: message.claimsSupersedes
         ? (message.supersedes ?? null)
         : null,

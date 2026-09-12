@@ -5,7 +5,12 @@ import {
   pickAndUploadMedia,
   uploadMediaBytes,
 } from "@/shared/api/tauri";
-import { uploadMediaFile } from "./routedMediaUpload";
+import { uploadMediaFile, uploadMediaFileToDrive } from "./routedMediaUpload";
+import { uploadRouteFor } from "./driveUploadRouting.mjs";
+import {
+  createDriveBatchFolder,
+  getGoogleDriveStatus,
+} from "@/shared/api/tauriDrive";
 import type { ImetaMedia } from "./imetaMediaMarkdown";
 import type { QueuedMediaAttachment } from "./backgroundMediaUploadStore";
 import { applyImetaUpdate, compactImetaSlots } from "./imetaSlots";
@@ -45,6 +50,20 @@ export type UploadingAttachmentPreview = {
    * cannot null a slot belonging to the draft now on screen.
    */
   uploadEpoch?: number;
+};
+
+/**
+ * A pending "these files will go to your Google Drive" confirmation, held in
+ * state while the composer shows the Drive-upload dialog. `resolve("folder")`
+ * uploads the batch into a single shared Drive folder; `resolve("separate")`
+ * uploads them as separate per-file links; `resolve(null)` drops the batch.
+ */
+export type DriveUploadConfirmRequest = {
+  /** The Drive-bound files (over 5 MB, or a video/audio/program). */
+  files: File[];
+  /** Whether the sender's Google Drive is connected — drives the dialog copy. */
+  connected: boolean;
+  resolve: (choice: "folder" | "separate" | null) => void;
 };
 
 /** Correlation id for the Rust `media-upload-progress` events. */
@@ -261,6 +280,15 @@ export function useMediaUpload({
   const [supersedesByUrl, setSupersedesByUrl] = React.useState<
     Map<string, string>
   >(() => new Map());
+
+  /**
+   * Pending Google-Drive upload confirmation, or null when no dialog is open.
+   * Set by `uploadFiles` when a batch contains files that route to Drive; the
+   * composer renders `DriveUploadConfirmDialog` from it, and the user's choice
+   * flows back through `resolve`.
+   */
+  const [driveConfirm, setDriveConfirm] =
+    React.useState<DriveUploadConfirmRequest | null>(null);
 
   const setAttachmentSupersedesEventId = React.useCallback(
     (url: string, eventId: string | null) => {
@@ -635,8 +663,8 @@ export function useMediaUpload({
     [finishUpload, isUploadCanceled],
   );
 
-  const uploadFiles = React.useCallback(
-    (files: File[]) => {
+  const startUploads = React.useCallback(
+    (files: File[], toDrive = false) => {
       if (files.length === 0) return;
 
       setUploadingCount((count) => count + files.length);
@@ -645,6 +673,10 @@ export function useMediaUpload({
       // completions are discarded rather than written into the new draft.
       const epoch = uploadEpochRef.current;
 
+      // `toDrive` forces every file to Drive (whole-batch Drive send); the
+      // default routes each file individually via `uploadMediaFile`.
+      const upload = toDrive ? uploadMediaFileToDrive : uploadMediaFile;
+
       for (let index = 0; index < files.length; index++) {
         const file = files[index];
         const slotIndex = baseIndex + index;
@@ -652,10 +684,7 @@ export function useMediaUpload({
         // Fire-and-forget each upload concurrently — slot preserves order.
         void (async () => {
           try {
-            const descriptor = await uploadMediaFile(
-              file,
-              uploadProgressId(previewId),
-            );
+            const descriptor = await upload(file, uploadProgressId(previewId));
             fillSlot(slotIndex, descriptor, previewId, epoch);
           } catch (err) {
             onUploadError(err, previewId);
@@ -664,6 +693,148 @@ export function useMediaUpload({
       }
     },
     [fillSlot, onUploadError, reserveSlots, reserveUploadingPreview],
+  );
+
+  /**
+   * A file takes the Drive path when it is over 5 MB or a video/audio/program.
+   * Mirrors the routing `uploadMediaFile` applies per file (see
+   * `driveUploadRouting.mjs`); used here only to decide which files need the
+   * up-front confirmation.
+   */
+  const isDriveBound = React.useCallback(
+    (file: File) =>
+      uploadRouteFor({
+        isVideo: isVideoFile(file),
+        name: file.name,
+        sizeBytes: file.size,
+        type: file.type,
+      }) === "drive",
+    [],
+  );
+
+  const uploadFilesAsDriveFolder = React.useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+
+      const epoch = uploadEpochRef.current;
+      const slotIndex = reserveSlots(1);
+      setUploadingCount((count) => count + files.length);
+
+      const d = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const dateStr = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      // Name the folder (and the message link) after its contents so it reads
+      // as e.g. "Oasis-Oliva Combined Platform + 2 more" rather than a generic
+      // "Google Drive folder". The Drive-side name keeps the date appended so
+      // the sender can still find the folder in their own Drive later.
+      const primaryBase =
+        files[0].name.replace(/\.[^./\\]+$/, "").trim() || "Files";
+      const displayName =
+        files.length === 1
+          ? files[0].name
+          : `${primaryBase} + ${files.length - 1} more`;
+      const folderName = `${displayName} — ${dateStr}`;
+
+      const previewIds = files.map((file) => reserveUploadingPreview(file));
+
+      try {
+        const folder = await createDriveBatchFolder(folderName);
+        if (isUploadStale(epoch)) {
+          for (const previewId of previewIds) finishUpload(previewId);
+          return;
+        }
+
+        await Promise.all(
+          files.map(async (file, i) => {
+            const previewId = previewIds[i];
+            try {
+              await uploadMediaFileToDrive(
+                file,
+                uploadProgressId(previewId),
+                undefined,
+                undefined,
+                folder.id,
+              );
+              finishUpload(previewId);
+            } catch (err) {
+              finishUpload(previewId);
+              throw err;
+            }
+          }),
+        );
+
+        if (isUploadStale(epoch)) return;
+
+        const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+        const folderDescriptor: ImetaMedia = {
+          external: true,
+          filename: displayName,
+          sha256: "",
+          size: totalBytes,
+          type: "application/octet-stream",
+          uploaded: 0,
+          url: folder.webViewLink,
+        };
+
+        setImetaSlots((prev) => {
+          if (slotIndex >= prev.length) return prev;
+          const next = [...prev];
+          next[slotIndex] = folderDescriptor;
+          return next;
+        });
+      } catch (err) {
+        setImetaSlots((prev) => {
+          if (slotIndex >= prev.length) return prev;
+          const next = [...prev];
+          next[slotIndex] = null;
+          return next;
+        });
+        onUploadError(err);
+      }
+    },
+    [
+      finishUpload,
+      isUploadStale,
+      onUploadError,
+      reserveSlots,
+      reserveUploadingPreview,
+    ],
+  );
+
+  const uploadFiles = React.useCallback(
+    (files: File[]) => {
+      if (files.length === 0) return;
+
+      // If ANY file in the batch routes to Drive (over 5 MB, or a
+      // video/audio/program), the WHOLE message goes to the sender's Google
+      // Drive and is shared as links. The user chooses between a single folder
+      // link or separate links per file. The batch stays together on one
+      // destination rather than splitting across the relay and Drive. A batch
+      // with no such file uploads to the relay as before, with no prompt.
+      if (!files.some(isDriveBound)) {
+        startUploads(files);
+        return;
+      }
+
+      // One confirmation for the whole batch. Proceeding sends every file to
+      // Drive as a folder link or separate links; cancelling drops the batch.
+      void (async () => {
+        const connected = await getGoogleDriveStatus();
+        const choice = await new Promise<"folder" | "separate" | null>(
+          (resolve) => {
+            setDriveConfirm({ files, connected, resolve });
+          },
+        );
+        setDriveConfirm(null);
+        if (!connected || choice === null) return;
+        if (choice === "folder") {
+          void uploadFilesAsDriveFolder(files);
+        } else {
+          startUploads(files, true);
+        }
+      })();
+    },
+    [isDriveBound, startUploads, uploadFilesAsDriveFolder],
   );
 
   const openFilePicker = useFilePicker();
@@ -965,6 +1136,7 @@ export function useMediaUpload({
     () => ({
       cancelUpload,
       clearQueuedAttachments,
+      driveConfirm,
       handleDragEnter,
       handleDragLeave,
       handleDragOver,
@@ -997,6 +1169,7 @@ export function useMediaUpload({
     [
       cancelUpload,
       clearQueuedAttachments,
+      driveConfirm,
       handleDragEnter,
       handleDragLeave,
       handleDragOver,

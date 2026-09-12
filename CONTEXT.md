@@ -24,6 +24,18 @@
   - `BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY`: `"1"` to enable auto-connecting default relay on first launch.
 
 ## Knowledge Items (KIs)
+- **Google Drive Batch Upload & Folder vs Separate Links (`0.5.23-2`)**:
+  - When sending files where any file is Drive-bound (>5 MB, or video/audio/program), the composer prompts before uploading to the sender's Google Drive (`DriveUploadConfirmDialog`).
+  - For single files, the user confirms upload to Drive as a direct link.
+  - For multi-file batches, the user can choose between "One folder link" (all files uploaded into a fresh shared folder under "Buzz uploads" with public reader permissions, resulting in 1 external folder link in the message) and "Separate links" (each file uploaded individually with 1 link per file).
+  - Implemented via Rust command `create_drive_batch_folder` in `desktop/src-tauri/src/google_meet/drive.rs` and `x-buzz-parent-id` header support in `upload_drive_bytes_raw`.
+  - Frontend orchestration in `desktop/src/features/messages/lib/useMediaUpload.ts` (`uploadFilesAsDriveFolder`) and `desktop/src/features/messages/ui/DriveUploadConfirmDialog.tsx`.
+- **File-Version Picker & Channel Link Enrichment (`0.5.23-2`)**:
+  - `cleanCaption(content)` extracts clean prose caption (`note`) by stripping markdown links, image embeds, and bare URLs, and collapsing whitespace.
+  - `ChannelFileEntry` and `ChannelLinkEntry` carry `note: string | null`. Populated for uploads and channel links.
+  - `FileVersionPicker` displays Google glyph and distinct file type icons (`Presentation` for slides, `FileSpreadsheet` for sheets, `FileText` for docs, `Folder` for folders, `File` for uploads, `Link2` for generic links).
+  - Option C layout: when a note exists on a generic Google link, only the note is rendered on line 1 (omitting redundant generic labels like "Google Slides" / "Slides"). When no note exists, concise type labels (`Folder`, `Slides`, `Sheet`, `Doc`) are used. Long notes wrap with `break-words` rather than truncating.
+  - Chronological ordering: `listChannelFiles` and `FileVersionPicker` sort by `uploadedAt` descending (`(b.uploadedAt ?? 0) - (a.uploadedAt ?? 0)`), interleaving uploads and links chronologically newest-first.
 - **Branching Topology**:
   - `main` branch: this fork's release line. Carries all k2alpha work; periodically catches up to upstream `block/buzz` (`https://github.com/block/buzz.git`, remote `upstream`) via a content merge — see "Upstream catch-up" below. It is NOT a clean mirror of upstream.
   - `google-sso` branch: Dedicated fork branch preserving Google SSO peppered identity derivation & direct relay connection work.

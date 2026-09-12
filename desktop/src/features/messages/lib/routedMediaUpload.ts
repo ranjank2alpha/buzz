@@ -68,10 +68,11 @@ async function uploadViaDrive(
   progressId?: string,
   signal?: AbortSignal,
   onDispatch?: () => void,
+  parentId?: string,
 ): Promise<ImetaMedia> {
   if (signal?.aborted) throw new Error("upload cancelled");
   onDispatch?.();
-  const uploaded = await uploadFileToDrive(file, progressId);
+  const uploaded = await uploadFileToDrive(file, progressId, parentId);
   if (signal?.aborted) throw new Error("upload cancelled");
 
   return {
@@ -86,6 +87,34 @@ async function uploadViaDrive(
     uploaded: 0,
     url: uploaded.webViewLink,
   };
+}
+
+/**
+ * Force a single file to the sender's Google Drive, regardless of size or type.
+ *
+ * Used when a whole batch is sent to Drive because at least one file in it is
+ * over the size threshold (or a video/audio/program): the smaller files ride
+ * along to the same destination rather than splitting off to the relay, so the
+ * message stays together. Refuses if Drive is not connected, the same as the
+ * size-triggered path in `uploadMediaFile`.
+ */
+export async function uploadMediaFileToDrive(
+  file: File,
+  progressId?: string,
+  signal?: AbortSignal,
+  onDispatch?: () => void,
+  parentId?: string,
+): Promise<ImetaMedia> {
+  if (!driveRoutingEnabled()) {
+    // Under e2e without the Drive mock, keep the relay behaviour specs expect.
+    return uploadToRelay(file, progressId, signal, onDispatch);
+  }
+  if (!(await getGoogleDriveStatus())) {
+    throw new Error(
+      "Video, audio, programs, and files over 5 MB are shared through your Google Drive. Connect your Google account under Settings → Voice to send this.",
+    );
+  }
+  return uploadViaDrive(file, progressId, signal, onDispatch, parentId);
 }
 
 export async function uploadMediaFile(

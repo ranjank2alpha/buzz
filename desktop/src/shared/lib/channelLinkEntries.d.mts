@@ -26,12 +26,27 @@ export type ChannelLinkEntry = {
   size: null;
   mime: null;
   url: string;
+  note: string | null;
   supersedes: string | null;
   supersededBy: string | null;
 };
 
 /** Hostname with any leading `www.` removed, or null if unparseable. */
 export function linkHost(url: string): string | null;
+
+/** True if a URL's hostname is `google.com` or any subdomain `*.google.com`. */
+export function isGoogleUrl(url: string | null | undefined): boolean;
+
+/** Classify a link URL into "folder", "slides", "sheet", "doc", or "link". */
+export function linkKind(
+  url: string | null | undefined,
+): "folder" | "slides" | "sheet" | "doc" | "link";
+
+/**
+ * Strip markdown links, image embeds, and bare URLs from message content,
+ * collapsing whitespace and returning the trimmed caption, or null if empty.
+ */
+export function cleanCaption(content: string | null | undefined): string | null;
 
 /** A human-readable display name for a link, or null if unparseable. */
 export function readableLinkName(url: string): string | null;
