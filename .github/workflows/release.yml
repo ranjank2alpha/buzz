@@ -15,6 +15,7 @@ name: Release Buzz desktop
 # not present in this fork — it depends on signing/App-token infrastructure
 # this fork doesn't have — so this file is a from-scratch equivalent scoped
 # to k2alpha's own distribution, not a copy of anything upstream ships.
+# Upstream contract reference: scripts/verify-release-ref.sh
 #
 # Structurally mirrors windows-canary.yml (the repo's own working Windows
 # Tauri build) wherever the two overlap — toolchain handling, pnpm pinning,
