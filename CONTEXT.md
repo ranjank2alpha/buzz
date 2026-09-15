@@ -12,6 +12,7 @@
   - `just ci` — full local gate (`fmt` + `clippy` + desktop lint + unit tests).
   - GitHub Actions Workflows:
     - `.github/workflows/ci.yml` — auto-runs on pushes to `main`.
+    - `.github/workflows/release.yml` — "Release Buzz desktop"; builds, signs, and publishes Windows NSIS installer releases upon pushing any `v*` tag (e.g. `v0.5.23-3`).
     - `.github/workflows/windows-canary.yml` — Windows NSIS installer build.
     - `.github/workflows/signed-macos-canary.yml` — signed macOS DMG build.
     - `.github/workflows/linux-canary.yml` — Linux AppImage/DEB build.
