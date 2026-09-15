@@ -182,6 +182,11 @@ async fn oauth_callback(
             .cloned()
             .unwrap_or_else(|| "Google did not return an authorization code".to_owned())),
     };
+    let is_err = result.is_err();
+    let err_msg = match &result {
+        Err(e) => e.clone(),
+        Ok(_) => String::new(),
+    };
     if let Some(sender) = state
         .sender
         .lock()
@@ -189,6 +194,15 @@ async fn oauth_callback(
         .take()
     {
         let _ = sender.send(result);
+    }
+
+    if is_err {
+        let safe_err = err_msg.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+        let html = format!(
+            r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Buzz - Google Sign-In Failed</title><style>body {{ font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: grid; place-items: center; min-height: 100vh; margin: 0; background: #fafafa; color: #231e1e; padding: 24px; }} main {{ max-width: 500px; padding: 32px; border: 2px solid #e11d48; border-radius: 20px; background: #fff; }} h1 {{ font-size: 20px; margin: 0 0 12px; color: #e11d48; }} p {{ margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: #555; }}</style></head><body><main><h1>Google Sign-In Failed</h1><p>{}</p><p>Please return to Buzz and try connecting again.</p></main></body></html>"#,
+            safe_err
+        );
+        return (StatusCode::BAD_REQUEST, Html(html)).into_response();
     }
 
     Html(crate::builderlab::AUTH_COMPLETE_HTML).into_response()

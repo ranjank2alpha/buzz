@@ -525,6 +525,17 @@ pub fn run() {
                     }
                 });
             }
+
+            #[cfg(not(target_os = "macos"))]
+            {
+                show_main_window(&app_handle);
+                let reveal_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    show_main_window(&reveal_handle);
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

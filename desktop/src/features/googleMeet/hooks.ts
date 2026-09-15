@@ -18,10 +18,10 @@ export function useGoogleMeetConnectionQuery() {
   return useQuery({
     queryKey: GOOGLE_MEET_CONNECTION_QUERY_KEY,
     queryFn: getGoogleMeetConnectionStatus,
-    // Cheap local keyring read, not a network call — fine to treat as fresh
-    // for the lifetime of the settings/channel view rather than re-fetching
-    // on every focus.
-    staleTime: Number.POSITIVE_INFINITY,
+    // Cheap local keyring read, not a network call — recheck on window focus so
+    // returning from external browser reflects newly saved credentials.
+    staleTime: 5_000,
+    refetchOnWindowFocus: true,
   });
 }
 

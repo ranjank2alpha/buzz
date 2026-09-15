@@ -24,6 +24,19 @@
   - `BUZZ_BUILD_AUTO_CONNECT_DEFAULT_RELAY`: `"1"` to enable auto-connecting default relay on first launch.
 
 ## Knowledge Items (KIs)
+- **Windows Credential Ceiling Overflow & Dedicated Index Tracking (`0.5.23-3`)**:
+  - Windows Credential Manager enforces a hard 2,560-character ceiling (`CRED_MAX_CREDENTIAL_BLOB_SIZE = 5,120` bytes for UTF-16).
+  - When the serialized JSON map of `SecretStore` exceeds `SAFE_BLOB_CHAR_LIMIT` (2,400 chars) or the OS returns `TooLong`, secrets are routed to dedicated per-key credentials `(service, key)`.
+  - Overflow tracking uses a lightweight dedicated index entry `(service, "__overflow_keys__")` storing a serialized JSON array of overflow key names (`Vec<String>`).
+  - Storing overflow names in `__overflow_keys__` prevents blob write failures on saturated blobs and ensures full participation in `load()`, `load_all_readonly()`, and `delete_all_with_legacy_cleanup()` without leaving zombie credentials upon sign-out.
+  - Test module in `desktop/src-tauri/src/secret_store.rs` extracted to `secret_store_tests.rs` (`#[path = "secret_store_tests.rs"] mod tests;`) so both files strictly satisfy the repository's 1,500-line ratchet limit (`scripts/check-file-sizes.mjs`).
+  - Google Meet OAuth callback enhanced to return formatted HTTP 400 Bad Request error pages upon denied consent or callback failure instead of premature `AUTH_COMPLETE_HTML`. Toast error duration set to 10s and React Query configured with `staleTime: 5000` + `refetchOnWindowFocus: true`.
+- **Windows Window Visibility & System Tray Interactivity (`0.5.23-3`)**:
+  - `tauri.conf.json` previously specified `"visible": false` to avoid first-frame flickers on macOS. On Windows, relying solely on `on_webview_ready` in the plugin builder left the main window unrevealed if timing races occurred before WebView2 geometry settled.
+  - Configured `"visible": true` and `"label": "main"` in `tauri.conf.json`.
+  - Added explicit startup reveal in `desktop/src-tauri/src/lib.rs` inside the Tauri `setup()` hook (`show_main_window`), alongside a 200ms post-restore async reveal.
+  - `TrayIconBuilder` in `desktop/src-tauri/src/tray_menu.rs` wired with `.on_tray_icon_event(...)` to handle `TrayIconEvent::Click` (left mouse button) and `TrayIconEvent::DoubleClick`, bringing Buzz to the foreground when interacting with the system tray icon.
+  - Cleared stale `.window-state.json` (which had pinned coordinates to `x: 2549, y: -11`). Production binary packaged with embedded assets (`pnpm tauri build --no-bundle`) and installed to `C:\Users\rkart\AppData\Local\Buzz\buzz-desktop.exe`.
 - **Google Drive Batch Upload & Folder vs Separate Links (`0.5.23-2`)**:
   - When sending files where any file is Drive-bound (>5 MB, or video/audio/program), the composer prompts before uploading to the sender's Google Drive (`DriveUploadConfirmDialog`).
   - For single files, the user confirms upload to Drive as a direct link.

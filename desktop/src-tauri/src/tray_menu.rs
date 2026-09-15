@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{
     image::Image,
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::{TrayIcon, TrayIconBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager, Runtime,
 };
 
@@ -221,7 +221,11 @@ pub enum TrayAction {
 }
 
 pub(crate) fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
+    let windows = app.webview_windows();
+    let keys: Vec<_> = windows.keys().cloned().collect();
+    eprintln!("buzz-desktop: show_main_window called; webview windows: {keys:?}");
     let Some(window) = app.get_webview_window("main") else {
+        eprintln!("buzz-desktop: window 'main' not found among: {keys:?}");
         return;
     };
     let _ = window.unminimize();
@@ -232,6 +236,10 @@ pub(crate) fn show_main_window<R: Runtime>(app: &AppHandle<R>) {
     if let Err(error) = window.set_focus() {
         eprintln!("buzz-desktop: failed to focus main window from tray: {error}");
     }
+    let vis = window.is_visible();
+    let pos = window.outer_position();
+    let sz = window.outer_size();
+    eprintln!("buzz-desktop: main window show() called; is_visible: {vis:?}, pos: {pos:?}, size: {sz:?}");
 }
 
 fn queue_tray_action<R: Runtime>(app: &AppHandle<R>, mut action: TrayAction) {
@@ -488,6 +496,20 @@ pub fn init<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .icon(tray_bee_icon())
         .icon_as_template(true)
         .on_menu_event(|app, event| handle_menu_event(app, event.id.as_ref()))
+        .on_tray_icon_event(|tray, event| match event {
+            TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            }
+            | TrayIconEvent::DoubleClick {
+                button: MouseButton::Left,
+                ..
+            } => {
+                show_main_window(tray.app_handle());
+            }
+            _ => {}
+        })
         .build(app)?;
     if let Err(error) = apply_activity_presentation(&tray, activities, recent_activities) {
         eprintln!("buzz-desktop: failed to apply tray menu presentation: {error}");

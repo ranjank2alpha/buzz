@@ -43,7 +43,7 @@ export function GoogleMeetSettingsCard() {
       toast.success("Google account connected");
     } catch (error) {
       console.error("Failed to connect Google account:", error);
-      toast.error(connectErrorMessage(error));
+      toast.error(connectErrorMessage(error), { duration: 10000 });
     }
   }
 
