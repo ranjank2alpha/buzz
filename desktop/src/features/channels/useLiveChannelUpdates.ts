@@ -9,11 +9,15 @@ import {
   getChannelIdFromTags,
   isThreadReply,
 } from "@/features/messages/lib/threading";
-import { shouldNotifyForEvent } from "@/features/notifications/lib/shouldNotify";
+import {
+  hasMentionForEvent,
+  shouldNotifyForEvent,
+} from "@/features/notifications/lib/shouldNotify";
 import { relayClient } from "@/shared/api/relayClient";
 import {
   CHANNEL_EVENT_KINDS,
   CHANNEL_MESSAGE_EVENT_KINDS,
+  HOME_MENTION_EVENT_KINDS,
 } from "@/shared/constants/kinds";
 import type { Channel, RelayEvent } from "@/shared/api/types";
 import {
@@ -147,10 +151,8 @@ export function useLiveChannelUpdates(
   const normalizedCurrentPubkey =
     options.currentPubkey?.trim().toLowerCase() ?? "";
   const seenMentionEventIdsRef = React.useRef(new Set<string>());
-  // Reconnect replay overlaps each live filter by five seconds so no message is
-  // lost at the boundary. Keep one shared guard for every notification side
-  // effect: the same event can be replayed repeatedly while a relay flaps, and
-  // mention events also arrive through both the channel and mention filters.
+  // Reconnect replay overlaps live filters so no message is lost at the
+  // boundary. Guard notification side effects against repeated delivery.
   const seenNotificationEventIdsRef = React.useRef(new Set<string>());
   const channelsInvalidateRef = React.useRef<TrailingDebounce | null>(null);
   if (channelsInvalidateRef.current === null) {
@@ -248,6 +250,17 @@ export function useLiveChannelUpdates(
     }
 
     const isDmChannel = dmChannelMap.has(channelId);
+    // Mention kinds are already in the channel stream. Keep Home's narrower
+    // kind/recipient policy without opening a second REQ for every channel.
+    if (
+      options.onLiveMention &&
+      HOME_MENTION_EVENT_KINDS.some((kind) => kind === event.kind) &&
+      isExternalMentionEvent(event, normalizedCurrentPubkey) &&
+      hasMentionForEvent(event, normalizedCurrentPubkey) &&
+      trackSeenEvent(seenMentionEventIdsRef.current, event.id)
+    ) {
+      options.onLiveMention();
+    }
     const isUnreadTriggerKind = isChannelUnreadTriggerKind(
       event.kind,
       isDmChannel,
@@ -365,6 +378,14 @@ export function useLiveChannelUpdates(
       dmSubscriptionStartedAtRef.current = Math.floor(Date.now() / 1000);
     });
   }, [queryClient]);
+
+  React.useEffect(
+    () =>
+      relayClient.subscribeToChannelAccessRevocations(
+        invalidateChannelsDebounced,
+      ),
+    [invalidateChannelsDebounced],
+  );
 
   // ONE multiplexed live subscription covers every joined channel at once
   // (chunked only if there are more channels than the relay's per-filter cap),

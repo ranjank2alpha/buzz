@@ -249,6 +249,15 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Automatic folder creation in your Google Drive with public reader access for effortless recipient sharing",
     ],
   },
+  {
+    version: "0.5.24-1",
+    date: "2026-09-24",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.24: the Inbox now remembers your unread-only choice, channels refresh after access changes, and startup is steadier under heavy load",
+      "People are shown by their npub across profiles, mentions, and member lists, with a refreshed onboarding flow",
+      "Your Google Drive uploads, the enriched file picker, Windows notifications, and faster channel sync are all unchanged",
+    ],
+  },
 ];
 
 /**

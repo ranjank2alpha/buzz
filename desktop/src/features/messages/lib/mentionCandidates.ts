@@ -6,7 +6,7 @@ import type {
   ChannelType,
   UserSearchResult,
 } from "@/shared/api/types";
-import { truncatePubkey } from "@/shared/lib/pubkey";
+import { truncateNpub } from "@/shared/lib/pubkey";
 import {
   MENTION_SCOPE_CHANNEL,
   MENTION_SCOPE_HERE,
@@ -111,7 +111,7 @@ export function buildGlobalMentionScopeCandidates(
 export function mentionCandidateLabel(candidate: MentionCandidate) {
   return (
     candidate.displayName ??
-    (candidate.pubkey ? truncatePubkey(candidate.pubkey) : "agent")
+    (candidate.pubkey ? truncateNpub(candidate.pubkey) : "agent")
   );
 }
 

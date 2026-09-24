@@ -66,6 +66,7 @@ import { KIND_REACTION } from "@/shared/constants/kinds";
 import { topChromeInset } from "@/shared/layout/chromeLayout";
 import { cn } from "@/shared/lib/cn";
 import { normalizePubkey } from "@/shared/lib/pubkey";
+import { getStorageItem, setStorageItem } from "@/shared/lib/safeStorage";
 import { useElementWidth } from "@/shared/hooks/use-mobile";
 import { useThreadPanelWidth } from "@/shared/hooks/useThreadPanelWidth";
 import { AUXILIARY_PANEL_SINGLE_COLUMN_BREAKPOINT_PX } from "@/shared/layout/AuxiliaryPanel";
@@ -80,6 +81,8 @@ const INBOX_SEARCH_KEYS = [
   "profileTab",
   "profileView",
 ] as const;
+
+const INBOX_UNREAD_ONLY_STORAGE_KEY = "buzz.desktop.inbox-unread-only";
 
 type HomeViewProps = {
   feed?: HomeFeedResponse;
@@ -112,11 +115,21 @@ export function HomeView({
     homeInboxWidthPx > 0 &&
     homeInboxWidthPx < INBOX_SINGLE_COLUMN_BREAKPOINT_PX;
   const [filter, setFilter] = React.useState<InboxFilter>("all");
-  // Defaults on: the Inbox is a list of what still needs attention, so it
-  // should empty out as you work through it. Showing read items by default
-  // made it look like rows were stuck. Not persisted — each launch starts
-  // focused, and turning it off is a deliberate "show me history" action.
-  const [unreadOnly, setUnreadOnly] = React.useState(true);
+  // Defaults on for a fresh install: the Inbox is a list of what still needs
+  // attention, so it empties out as you work through it. Upstream 0.5.24 then
+  // persists the choice, so turning it off to "show me history" now sticks
+  // across launches. (Fork kept its on-by-default first run; adopted upstream's
+  // persistence rather than resetting to focused on every launch.)
+  const [unreadOnly, setUnreadOnly] = React.useState(() => {
+    const stored = getStorageItem(INBOX_UNREAD_ONLY_STORAGE_KEY);
+    return stored == null ? true : stored === "true";
+  });
+  const handleUnreadOnlyChange = React.useCallback((value: boolean) => {
+    setUnreadOnly(value);
+    // Match other local preferences: storage failures keep the current view
+    // usable, while safeStorage records a warning if persistence is unavailable.
+    setStorageItem(INBOX_UNREAD_ONLY_STORAGE_KEY, String(value));
+  }, []);
   // Explicit selections are mirrored to the URL (`?item=`), so back/forward
   // restores the detail pane each history entry was showing and reloads
   // restore it from the URL. Default/automatic selection stays local-only —
@@ -742,7 +755,7 @@ export function HomeView({
                 handleUserSelectItem(null);
                 setSelectedReminderId(reminderId);
               }}
-              onUnreadOnlyChange={setUnreadOnly}
+              onUnreadOnlyChange={handleUnreadOnlyChange}
               reminderPubkey={currentPubkey}
               reminders={pendingReminders}
               selectedConversationId={selectedConversationId}

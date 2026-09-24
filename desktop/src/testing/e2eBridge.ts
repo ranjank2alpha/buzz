@@ -30,7 +30,13 @@ import {
   subscribeControlResults,
 } from "@/features/agents/observerRelayStore";
 import { switchManagedAgentModel } from "@/shared/api/agentControl";
+import { getAudioMediaLoadSchedulerSnapshot } from "@/features/messages/lib/audioMediaLoadScheduler";
 import { mockSearchHitMatches } from "./e2eBridgeSearch.ts";
+import { selectMockHistory } from "./e2eBridgeHistory.ts";
+import {
+  createMockSubscription,
+  hasMockSubscription,
+} from "./e2eBridgeSubscriptions.ts";
 export { mockSearchHitMatches };
 import type { ConnectionState } from "@/shared/api/relayClientShared";
 import type {
@@ -164,6 +170,7 @@ type MockPersonaSeed = {
   namePool?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
+  sessionPolicy?: "channel" | "thread";
 };
 
 type MockTeamSeed = {
@@ -417,6 +424,8 @@ type E2eConfig = {
     /** Delay (ms) applied to newest-page channel-window requests. */
     channelHeadDelayMs?: number;
     profileReadDelayMs?: number;
+    /** Hold `get_profile` responses until the E2E release seam is invoked. */
+    deferProfileReads?: boolean;
     profileReadError?: string;
     /** Override whether get_profile reports a real kind:0 event. */
     profileHasEvent?: boolean;
@@ -568,6 +577,8 @@ type E2eConfig = {
       id: string;
       href: string;
     }>;
+    /** Reject one `get_identity` call after this many successful reads. */
+    identityReadErrorAfter?: { message: string; successfulReads: number };
     // When true, `get_identity` returns `lost: true` until `persist_current_identity`
     // or `import_identity` is called. Drives the identity-lost recovery UX in tests.
     identityLost?: boolean;
@@ -1032,6 +1043,7 @@ type RawPersona = {
   respond_to?: string | null;
   respond_to_allowlist?: string[];
   parallelism?: number | null;
+  session_policy?: "channel" | "thread";
   created_at: string;
   updated_at: string;
 };
@@ -1078,14 +1090,7 @@ type MockManagedAgentRuntimeRow = {
 type WsHandler = (message: unknown) => void;
 const GLOBAL_MOCK_SUBSCRIPTION = "*";
 
-type MockSubscription = {
-  channelIds: string[];
-  kinds: number[] | null;
-  /** `#p` values from the REQ filters, if any — lets specs assert an
-   *  owner-scoped live subscription (e.g. the observer-archive `24200`
-   *  reconciliation gate) independently of channel-scoped ones. */
-  ownerPubkeys: string[];
-};
+type MockSubscription = ReturnType<typeof createMockSubscription>;
 
 type MockFilter = {
   "#a"?: string[];
@@ -1268,6 +1273,7 @@ declare global {
     __BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?: (input: {
       channelName: string;
       kind?: number;
+      exactChannel?: boolean;
     }) => boolean;
     __BUZZ_E2E_HAS_MOCK_OWNER_KIND_SUBSCRIPTION__?: (input: {
       ownerPubkey: string;
@@ -1594,10 +1600,16 @@ declare global {
     __BUZZ_E2E_HOLD_USERS_BATCH__?: (hold: boolean) => number;
     /** Number of `get_users_batch` calls currently held. */
     __BUZZ_E2E_USERS_BATCH_PENDING__?: () => number;
+    /** Release every `get_profile` response held by `deferProfileReads`. */
+    __BUZZ_E2E_RELEASE_PROFILE_READS__?: () => number;
+    /** Number of `get_profile` responses currently held. */
+    __BUZZ_E2E_PROFILE_READS_PENDING__?: () => number;
     /** Uploads that passed mock-native registration and began relay work. */
     __BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__?: number;
     /** Hold renderer-owned media fetches until their cancellation command. */
     __BUZZ_E2E_HOLD_MEDIA_FETCHES__?: boolean;
+    /** Real scheduler ownership, including work not yet admitted to native fetch. */
+    __BUZZ_E2E_AUDIO_LOAD_STATE__?: typeof getAudioMediaLoadSchedulerSnapshot;
     /** Exact active/peak native media-fetch ownership for scheduler tests. */
     __BUZZ_E2E_MEDIA_FETCH_STATE__?: { active: number; peak: number };
     /** Object-URL lifecycle counters installed by the audio E2E regression. */
@@ -1697,6 +1709,8 @@ const STARTER_WELCOME_CHANNEL_NAME = "welcome-everyone";
 let mockIdentityLostCleared = false;
 // Same pattern for `mock.identityLocked`.
 let mockIdentityLockedCleared = false;
+let identityReadCount = 0;
+let identityReadErrorConsumed = false;
 
 // ── get_event defer/release seam ────────────────────────────────────────────
 // When `window.__BUZZ_E2E_DEFER_GET_EVENT__` is set to a target event ID,
@@ -1715,6 +1729,13 @@ let deferredGetEventQueue: DeferredGetEvent[] = [];
 let deferredLinkPreviewMetadataQueue: Array<() => void> = [];
 let deferredLinkPreviewUploadQueue: Array<() => void> = [];
 let deferredThreadRepliesQueue: Array<() => void> = [];
+type DeferredProfileRead = {
+  reject: (reason: unknown) => void;
+  resolve: (value: unknown) => void;
+  run: () => Promise<unknown>;
+};
+let deferredProfileReadQueue: DeferredProfileRead[] = [];
+let profileReadsReleased = false;
 // ── get_users_batch hold seam ───────────────────────────────────────────────
 // Toggled at runtime by `__BUZZ_E2E_HOLD_USERS_BATCH__(hold)` rather than fixed
 // at boot by a mock-config flag, because a mention-identity spec needs both
@@ -2654,6 +2675,7 @@ function resetMockPersonas(config?: E2eConfig) {
     model: null,
     provider: null,
     name_pool: [],
+    session_policy: "channel",
     is_builtin: true,
     is_active: activePersonaIds.has(persona.id),
     shared: false,
@@ -2677,6 +2699,7 @@ function resetMockPersonas(config?: E2eConfig) {
         persona.respondTo === "allowlist"
           ? [...(persona.respondToAllowlist ?? [])]
           : [],
+      session_policy: persona.sessionPolicy ?? "channel",
       is_builtin: false,
       is_active: persona.isActive ?? true,
       shared: persona.shared ?? false,
@@ -3537,6 +3560,8 @@ function mockPersonaCatalogPublications() {
       });
     };
     const rawDescription = content.description;
+    const sessionPolicy =
+      content.session_policy === "thread" ? "thread" : "channel";
     if (
       typeof displayName !== "string" ||
       !displayName.trim() ||
@@ -3580,6 +3605,7 @@ function mockPersonaCatalogPublications() {
               : null,
         parallelism:
           typeof content.parallelism === "number" ? content.parallelism : null,
+        sessionPolicy,
       },
     });
   }
@@ -4900,36 +4926,10 @@ function emitMockHistory(
   channelIds: string[],
   filter: MockFilter,
 ) {
-  const events = channelIds
-    .flatMap((channelId) => getMockMessageStore(channelId))
-    .filter((event) => {
-      if (filter.kinds && !filter.kinds.includes(event.kind)) {
-        return false;
-      }
-      if (filter.since !== undefined && event.created_at < filter.since) {
-        return false;
-      }
-      if (filter.until !== undefined && event.created_at > filter.until) {
-        return false;
-      }
-      return true;
-    })
-    // Relay order is `created_at DESC, id ASC` — match it (both the WS history
-    // page and the `get_channel_messages_before` keyset are backed by that one
-    // order in production, so the mock must be self-consistent too, else a
-    // same-second slice returned here won't line up with the keyset's tiebreak
-    // and the dense-second escape hatch can't prove completeness). Bare `until`
-    // still can't advance past a second denser than one page; the composite
-    // keyset is the escape hatch.
-    .sort(
-      (left, right) =>
-        right.created_at - left.created_at || left.id.localeCompare(right.id),
-    )
-    .slice(0, filter.limit ?? 50)
-    .sort(
-      (left, right) =>
-        left.created_at - right.created_at || left.id.localeCompare(right.id),
-    );
+  const events = selectMockHistory(
+    new Map(channelIds.map((id) => [id, getMockMessageStore(id)])),
+    [filter],
+  );
 
   const emit = () => {
     for (const event of events) {
@@ -5041,22 +5041,19 @@ function emitMockGlobalEvent(event: RelayEvent) {
   }
 }
 
-function hasMockLiveSubscription(channelId: string, kind?: number) {
-  for (const socket of mockSockets.values()) {
-    for (const subscription of socket.subscriptions.values()) {
-      if (
-        (subscription.channelIds.includes(channelId) ||
-          subscription.channelIds.includes(GLOBAL_MOCK_SUBSCRIPTION)) &&
-        (kind === undefined ||
-          !subscription.kinds ||
-          subscription.kinds.includes(kind))
-      ) {
-        return true;
-      }
-    }
-  }
-
-  return false;
+function hasMockLiveSubscription(
+  channelId: string,
+  kind?: number,
+  exactChannel = false,
+) {
+  return [...mockSockets.values()].some((socket) =>
+    hasMockSubscription(
+      socket.subscriptions.values(),
+      channelId,
+      kind,
+      exactChannel,
+    ),
+  );
 }
 
 /**
@@ -6739,8 +6736,15 @@ async function handleGetChannels(
   };
 }
 
-async function handleGetProfile(config: E2eConfig | undefined) {
+async function runGetProfile(config: E2eConfig | undefined) {
   const identity = getIdentity(config);
+  const profileReadDelayMs = config?.mock?.profileReadDelayMs ?? 0;
+  if (profileReadDelayMs > 0) {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, profileReadDelayMs);
+    });
+  }
+
   const forcedHasProfileEvent = config?.mock?.profileHasEvent;
   if (forcedHasProfileEvent !== undefined) {
     return {
@@ -6749,13 +6753,6 @@ async function handleGetProfile(config: E2eConfig | undefined) {
     };
   }
   if (!identity) {
-    const profileReadDelayMs = config?.mock?.profileReadDelayMs ?? 0;
-    if (profileReadDelayMs > 0) {
-      await new Promise<void>((resolve) => {
-        window.setTimeout(resolve, profileReadDelayMs);
-      });
-    }
-
     const profileReadError = config?.mock?.profileReadError;
     if (profileReadError) {
       throw new Error(profileReadError);
@@ -6789,6 +6786,20 @@ async function handleGetProfile(config: E2eConfig | undefined) {
     owner_pubkey: null,
     has_profile_event: true,
   };
+}
+
+async function handleGetProfile(config: E2eConfig | undefined) {
+  if (!config?.mock?.deferProfileReads || profileReadsReleased) {
+    return runGetProfile(config);
+  }
+
+  return new Promise<unknown>((resolve, reject) => {
+    deferredProfileReadQueue.push({
+      resolve,
+      reject,
+      run: () => runGetProfile(config),
+    });
+  });
 }
 
 async function handleUpdateProfile(
@@ -8850,6 +8861,7 @@ type PersonaBehaviorInput = {
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
   parallelism?: number;
+  sessionPolicy?: "channel" | "thread";
 };
 
 /** Mirrors `apply_persona_behavior`: replace all four as a unit. */
@@ -8866,6 +8878,7 @@ function applyMockPersonaBehavior(
       ? [...(behavior.respondToAllowlist ?? [])]
       : [];
   persona.parallelism = behavior.parallelism ?? null;
+  persona.session_policy = behavior.sessionPolicy ?? "channel";
 }
 
 async function handleCreatePersona(args: {
@@ -8907,6 +8920,7 @@ async function handleCreatePersona(args: {
         }
       : null,
     env_vars: { ...(args.input.envVars ?? {}) },
+    session_policy: "channel",
     created_at: now,
     updated_at: now,
   };
@@ -10846,39 +10860,33 @@ function sendToMockSocket(args: {
     }
 
     if (subId.startsWith("live-")) {
-      // Collect channel IDs from all filters in the REQ
-      const channelIds = new Set<string>();
-      const kinds = new Set<number>();
-      const ownerPubkeys = new Set<string>();
-      for (const f of filters) {
-        for (const channelId of f["#h"] ?? []) channelIds.add(channelId);
-        for (const kind of f.kinds ?? []) {
-          kinds.add(kind);
-        }
-        for (const p of f["#p"] ?? []) {
-          ownerPubkeys.add(p);
-        }
-      }
+      const subscription = createMockSubscription(filters);
       const onlyChannelId =
-        channelIds.size === 1
-          ? (channelIds.values().next().value as string)
+        subscription.channelIds.length === 1 &&
+        subscription.channelIds[0] !== GLOBAL_MOCK_SUBSCRIPTION
+          ? subscription.channelIds[0]
           : undefined;
       if (
         getConfig()?.mock?.closeChannelLiveSubscriptionOnce &&
         !mockClosedChannelLiveSubscription &&
         onlyChannelId &&
-        kinds.has(KIND_CHANNEL_THREAD_SUMMARY)
+        subscription.kinds?.includes(KIND_CHANNEL_THREAD_SUMMARY)
       ) {
         mockClosedChannelLiveSubscription = true;
         sendWsText(socket.handler, ["CLOSED", subId, "rate-limited"]);
         return;
       }
-      socket.subscriptions.set(subId, {
-        channelIds:
-          channelIds.size > 0 ? [...channelIds] : [GLOBAL_MOCK_SUBSCRIPTION],
-        kinds: kinds.size > 0 ? [...kinds] : null,
-        ownerPubkeys: [...ownerPubkeys],
-      });
+      socket.subscriptions.set(subId, subscription);
+      // Live requests still replay stored matches; pacing can admit them after
+      // a publish. Ephemeral/global fixtures are not channel history.
+      const history = new Map(
+        subscription.channelIds
+          .filter((id) => id !== GLOBAL_MOCK_SUBSCRIPTION)
+          .map((id) => [id, getMockMessageStore(id)]),
+      );
+      for (const event of selectMockHistory(history, filters)) {
+        sendWsText(socket.handler, ["EVENT", subId, event]);
+      }
       sendWsText(socket.handler, ["EOSE", subId]);
       return;
     }
@@ -11327,6 +11335,8 @@ export function maybeInstallE2eTauriMocks() {
   deferredLinkPreviewMetadataQueue = [];
   deferredLinkPreviewUploadQueue = [];
   deferredThreadRepliesQueue = [];
+  deferredProfileReadQueue = [];
+  profileReadsReleased = false;
   holdUsersBatch = false;
   heldUsersBatchReleases = [];
   cancelledMediaUploadIds = new Set<string>();
@@ -11336,6 +11346,7 @@ export function maybeInstallE2eTauriMocks() {
   cancelledMediaFetchIds = new Set<string>();
   mockMediaFetchControllers = new Map<string, AbortController>();
   window.__BUZZ_E2E_LINK_PREVIEW_UPLOAD_STARTS__ = 0;
+  window.__BUZZ_E2E_AUDIO_LOAD_STATE__ = getAudioMediaLoadSchedulerSnapshot;
   window.__BUZZ_E2E_MEDIA_FETCH_STATE__ = { active: 0, peak: 0 };
   window.__BUZZ_E2E_RELEASE_LINK_PREVIEW_METADATA__ = () => {
     const queued = deferredLinkPreviewMetadataQueue.splice(0);
@@ -11354,6 +11365,16 @@ export function maybeInstallE2eTauriMocks() {
   };
   window.__BUZZ_E2E_THREAD_REPLIES_PENDING__ = () =>
     deferredThreadRepliesQueue.length;
+  window.__BUZZ_E2E_RELEASE_PROFILE_READS__ = () => {
+    profileReadsReleased = true;
+    const queued = deferredProfileReadQueue.splice(0);
+    for (const deferred of queued) {
+      void deferred.run().then(deferred.resolve, deferred.reject);
+    }
+    return queued.length;
+  };
+  window.__BUZZ_E2E_PROFILE_READS_PENDING__ = () =>
+    deferredProfileReadQueue.length;
   window.__BUZZ_E2E_HOLD_USERS_BATCH__ = (hold: boolean) => {
     holdUsersBatch = hold;
     // Releasing on the way out of the hold, not on the way in, is what lets a
@@ -11582,7 +11603,11 @@ export function maybeInstallE2eTauriMocks() {
       createdAt,
     );
   };
-  window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__ = ({ channelName, kind }) => {
+  window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__ = ({
+    channelName,
+    kind,
+    exactChannel,
+  }) => {
     const channel = mockChannels.find(
       (candidate) => candidate.name === channelName,
     );
@@ -11590,7 +11615,7 @@ export function maybeInstallE2eTauriMocks() {
       throw new Error(`Mock channel ${channelName} not found.`);
     }
 
-    return hasMockLiveSubscription(channel.id, kind);
+    return hasMockLiveSubscription(channel.id, kind, exactChannel);
   };
   window.__BUZZ_E2E_HAS_MOCK_OWNER_KIND_SUBSCRIPTION__ = ({
     ownerPubkey,
@@ -12562,6 +12587,16 @@ export function maybeInstallE2eTauriMocks() {
         }
       }
       case "get_identity": {
+        const identityReadError = activeConfig?.mock?.identityReadErrorAfter;
+        if (
+          identityReadError &&
+          !identityReadErrorConsumed &&
+          identityReadCount >= identityReadError.successfulReads
+        ) {
+          identityReadErrorConsumed = true;
+          throw new Error(identityReadError.message);
+        }
+        identityReadCount += 1;
         const isLost =
           !mockIdentityLostCleared && activeConfig?.mock?.identityLost === true;
         const isLocked =
@@ -12832,9 +12867,9 @@ export function maybeInstallE2eTauriMocks() {
         // to in-app activity tracking.
         return null;
       case "get_git_identity":
-        // Matches the "Thomas P" author on a mock snapshot commit so the
+        // Matches the synthetic human author on a mock snapshot commit so the
         // viewer-identity avatar attribution is exercised in e2e.
-        return { name: "Thomas P", email: "thomasp@example.com" };
+        return { name: "Avery E", email: "avery@example.com" };
       case "get_project_repo_snapshot":
         if (activeConfig?.mock?.projectRepoSnapshotDelayMs) {
           await new Promise((resolve) =>
@@ -12868,8 +12903,8 @@ export function maybeInstallE2eTauriMocks() {
             {
               hash: "123456789abcdef0123456789abcdef012345678",
               short_hash: "1234567",
-              author_name: "Thomas P",
-              author_email: "thomasp@example.com",
+              author_name: "Avery E",
+              author_email: "avery@example.com",
               timestamp: Math.floor(Date.now() / 1000) - 1_800,
               subject: "Point project repository details at active branch",
             },
@@ -12898,8 +12933,8 @@ export function maybeInstallE2eTauriMocks() {
               last_commit_at: Math.floor(Date.now() / 1000) - 600,
             },
             {
-              name: "Thomas P",
-              email: "thomasp@example.com",
+              name: "Avery E",
+              email: "avery@example.com",
               commit_count: 3,
               last_commit_at: Math.floor(Date.now() / 1000) - 1_800,
             },
@@ -13986,8 +14021,7 @@ export function maybeInstallE2eTauriMocks() {
         // Post-create bootstrap reconcile: no new pairs in the mock world.
         return [];
       case "set_agent_managed_profiles":
-        return undefined;
-      case "set_thread_scoped_acp_sessions":
+      case "set_agent_avatar_communities":
         return undefined;
       case "set_managed_agent_auto_restart":
         return handleSetManagedAgentAutoRestart(
