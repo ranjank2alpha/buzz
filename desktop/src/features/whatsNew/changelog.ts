@@ -258,6 +258,16 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Your Google Drive uploads, the enriched file picker, Windows notifications, and faster channel sync are all unchanged",
     ],
   },
+  {
+    version: "0.5.26-1",
+    date: "2026-10-01",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.25 and 0.5.26: a channel's canvas now keeps a version history you can restore from, and your sidebar sections, sort order, stars, and mutes now stay in sync across your devices",
+      "Private key backups are now encrypted on your machine with native HPKE",
+      "Steadier long threads, faster channel loading, and a fix for joining unlisted project channels",
+      "Your Windows notifications, Google Drive uploads, enriched file picker, and in-app document viewer are unchanged",
+    ],
+  },
 ];
 
 /**

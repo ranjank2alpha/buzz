@@ -378,6 +378,10 @@ type E2eConfig = {
     deepHistoryMessageCount?: number;
     feedReadError?: string;
     canvasReadError?: string;
+    /** Seed canvas revisions (oldest first) so history/restore journeys can
+     *  drive the real panel against a stateful store. Each save appends a new
+     *  head; `get_canvas_history` pages over the accumulated stream. */
+    canvasRevisions?: MockCanvasRevisionSeed[];
     /** Delay (ms) for `apply_workspace` so e2e tests can observe the
      *  community-switch gate. 0/undefined = instant. */
     applyCommunityDelayMs?: number;
@@ -673,6 +677,8 @@ type E2eConfig = {
      * returning a catalog.
      */
     discoverAgentModelsError?: string;
+    /** ACP commands returned by the discovery IPC in mock mode. */
+    acpCommands?: Array<{ command: string; binaryPath: string }>;
     // Backend provider mocks for the create-agent "Run on" section. See
     // tests/helpers/bridge.ts:MockBridgeOptions for semantics.
     backendProviders?: Array<{ id: string; binaryPath: string }>;
@@ -1025,6 +1031,7 @@ type RawManagedAgentPrereqs = {
 };
 
 type RawPersona = {
+  acp_command?: string | null;
   id: string;
   display_name: string;
   avatar_url: string | null;
@@ -3363,6 +3370,49 @@ type MockSaveSubscriptionRow = {
 };
 let mockSaveSubscriptions: MockSaveSubscriptionRow[] = [];
 
+// Stateful mock canvas: an append-only revision stream keyed by channel, newest
+// first, mirroring the relay's 40100 history. `get_canvas` returns the head,
+// `set_canvas` appends a new head, and `get_canvas_history` pages over the
+// stream with the same `(created_at DESC, id ASC)` composite cursor the Rust
+// command uses — so history/save-conflict/restore journeys run against real
+// state instead of a fixed stub.
+type MockCanvasRevisionSeed = {
+  content: string;
+  /** Optional; defaults to a monotonically increasing second per seed. */
+  createdAt?: number;
+  /** Optional 64-hex id; defaults to a fresh mock event id. */
+  eventId?: string;
+  /** Optional author pubkey; defaults to the mock viewer. */
+  author?: string;
+};
+type MockCanvasRevision = {
+  eventId: string;
+  content: string;
+  createdAt: number;
+  author: string;
+};
+let mockCanvasRevisions = new Map<string, MockCanvasRevision[]>();
+
+// The canvas UI reaches the mock via the starter "general" channel in specs.
+const DEFAULT_STARTER_CANVAS_CHANNEL = STARTER_GENERAL_CHANNEL_ID;
+
+function resetMockCanvasRevisions(config: E2eConfig | undefined) {
+  mockCanvasRevisions = new Map();
+  const seeds = config?.mock?.canvasRevisions;
+  if (!seeds || seeds.length === 0) {
+    return;
+  }
+  // Seeds are oldest-first; store newest-first so index 0 is always the head.
+  const revisions = seeds.map((seed, index) => ({
+    eventId: seed.eventId ?? mockEventId(),
+    content: seed.content,
+    createdAt: seed.createdAt ?? 1_700_000_000 + index,
+    author: seed.author ?? DEFAULT_MOCK_IDENTITY.pubkey,
+  }));
+  revisions.reverse();
+  mockCanvasRevisions.set(DEFAULT_STARTER_CANVAS_CHANNEL, revisions);
+}
+
 type MockObservedUnreadScope = {
   generation: string;
   revision: number;
@@ -3504,6 +3554,11 @@ function mockPersonaCatalogPublications() {
     } catch {
       continue;
     }
+    if (
+      content.acp_command != null &&
+      !portableMockAcpCommand(content.acp_command)
+    )
+      continue;
     const displayName = content.display_name;
     const systemPrompt = content.system_prompt ?? "";
     const optionalString = (value: unknown) =>
@@ -3588,6 +3643,7 @@ function mockPersonaCatalogPublications() {
         avatarUrl: optionalString(content.avatar_url),
         description: optionalString(rawDescription),
         systemPrompt,
+        acpCommand: optionalString(content.acp_command),
         runtime: optionalString(content.runtime),
         model: optionalString(content.model),
         provider: optionalString(content.provider),
@@ -8883,6 +8939,7 @@ function applyMockPersonaBehavior(
 
 async function handleCreatePersona(args: {
   input: {
+    acpCommand?: string;
     displayName: string;
     avatarUrl?: string;
     description?: string | null;
@@ -8902,6 +8959,7 @@ async function handleCreatePersona(args: {
     avatar_url: args.input.avatarUrl?.trim() || null,
     description: args.input.description?.trim() || null,
     system_prompt: args.input.systemPrompt.trim(),
+    acp_command: args.input.acpCommand ?? "buzz-acp",
     runtime: args.input.runtime?.trim() || null,
     model: args.input.model?.trim() || null,
     provider: args.input.provider?.trim() || null,
@@ -8931,6 +8989,7 @@ async function handleCreatePersona(args: {
 }
 
 type MockUpdatePersonaInput = {
+  acpCommand?: string;
   id: string;
   displayName: string;
   avatarUrl?: string;
@@ -8970,6 +9029,7 @@ async function applyMockPersonaUpdate(
   persona.avatar_url = input.avatarUrl?.trim() || null;
   persona.description = input.description?.trim() || null;
   persona.system_prompt = input.systemPrompt.trim();
+  if (input.acpCommand !== undefined) persona.acp_command = input.acpCommand;
   persona.runtime = input.runtime?.trim() || null;
   persona.model = input.model?.trim() || null;
   persona.provider = input.provider?.trim() || null;
@@ -9062,6 +9122,14 @@ function upsertMockPersonaRelayEvent(event: RelayEvent): void {
   mockPersonaEvents.push(event);
 }
 
+function portableMockAcpCommand(command: unknown): command is string {
+  return (
+    typeof command === "string" &&
+    command.length <= 255 &&
+    (command === "buzz-acp" || /^buzz-[A-Za-z0-9_-]+-acp$/.test(command))
+  );
+}
+
 function upsertMockPersonaEvent(
   persona: RawPersona,
   identity?: TestIdentity,
@@ -9073,6 +9141,13 @@ function upsertMockPersonaEvent(
     content: JSON.stringify({
       display_name: persona.display_name,
       system_prompt: persona.system_prompt,
+      acp_command: persona.shared
+        ? persona.acp_command == null
+          ? "buzz-acp"
+          : portableMockAcpCommand(persona.acp_command)
+            ? persona.acp_command
+            : undefined
+        : persona.acp_command,
       avatar_url: persona.avatar_url,
       description: persona.description ?? null,
       runtime: persona.runtime ?? null,
@@ -9881,6 +9956,7 @@ async function handleUpdateManagedAgent(args: {
     envVars?: Record<string, string>;
     respondTo?: "owner-only" | "allowlist" | "anyone";
     respondToAllowlist?: string[];
+    acpCommand?: string;
   };
 }): Promise<{ agent: RawManagedAgent; profile_sync_error: string | null }> {
   const agent = getMockManagedAgent(args.input.pubkey);
@@ -9901,6 +9977,9 @@ async function handleUpdateManagedAgent(args: {
   }
   if (args.input.respondToAllowlist !== undefined) {
     agent.respond_to_allowlist = args.input.respondToAllowlist;
+  }
+  if (args.input.acpCommand !== undefined) {
+    agent.acp_command = args.input.acpCommand;
   }
   agent.updated_at = new Date().toISOString();
   return { agent: cloneManagedAgent(agent), profile_sync_error: null };
@@ -11400,6 +11479,7 @@ export function maybeInstallE2eTauriMocks() {
   resetMockObservedUnread();
   resetMockTeamCatalogEvents(config);
   resetMockSaveSubscriptions(config);
+  resetMockCanvasRevisions(config);
   resetMockPendingCommunityDeepLinks(config);
   resetMockPendingNavigationDeepLinks(config);
   resetMockPendingEntityDeepLinks(config);
@@ -13511,6 +13591,8 @@ export function maybeInstallE2eTauriMocks() {
           payload as { runtimeId?: string },
           activeConfig,
         );
+      case "discover_acp_commands":
+        return activeConfig?.mock?.acpCommands ?? [];
       case "discover_backend_providers":
         return activeConfig?.mock?.backendProviders ?? [];
       case "probe_backend_provider": {
@@ -14777,15 +14859,100 @@ export function maybeInstallE2eTauriMocks() {
         // The spec only verifies UI state, not the submitted request shape;
         // returning null mirrors the Rust submit_event success path.
         return null;
-      case "set_canvas":
-        return { ok: true, event_id: mockEventId() };
+      case "set_canvas": {
+        const req = payload as {
+          channelId: string;
+          content: string;
+          expectedRevision?: string | null;
+        };
+        const stream = mockCanvasRevisions.get(req.channelId) ?? [];
+        const head = stream[0] ?? null;
+        // Mirror the desktop command's client-side advisory check: read the
+        // live head, compare locally, and fail with the frozen conflict
+        // strings so canvasConflict.ts recognizes them.
+        const expected = req.expectedRevision;
+        if (expected !== undefined && expected !== null) {
+          if (expected === "none" && head) {
+            throw new Error("conflict: canvas changed since it was loaded");
+          }
+          if (expected !== "none" && !head) {
+            throw new Error("conflict: canvas revision does not exist");
+          }
+          if (expected !== "none" && head && expected !== head.eventId) {
+            throw new Error("conflict: canvas changed since it was loaded");
+          }
+        }
+        const revision: MockCanvasRevision = {
+          eventId: mockEventId(),
+          content: req.content,
+          createdAt: (head?.createdAt ?? 1_700_000_000) + 1,
+          author: DEFAULT_MOCK_IDENTITY.pubkey,
+        };
+        mockCanvasRevisions.set(req.channelId, [revision, ...stream]);
+        return { ok: true, event_id: revision.eventId, verified: true };
+      }
       case "get_canvas": {
         const canvasReadError = activeConfig?.mock?.canvasReadError;
         if (canvasReadError) {
           throw new Error(canvasReadError);
         }
-        // Return the no-canvas success shape — content null means no canvas set.
-        return { content: null, updated_at: null, author: null };
+        const req = payload as { channelId: string };
+        const head = mockCanvasRevisions.get(req.channelId)?.[0] ?? null;
+        if (!head) {
+          // No-canvas success shape — content null means no canvas set.
+          return {
+            content: null,
+            event_id: null,
+            updated_at: null,
+            author: null,
+          };
+        }
+        return {
+          content: head.content,
+          event_id: head.eventId,
+          updated_at: head.createdAt,
+          author: head.author,
+        };
+      }
+      case "get_canvas_history": {
+        const req = payload as {
+          channelId: string;
+          limit?: number | null;
+          until?: number | null;
+          beforeId?: string | null;
+        };
+        const pageSize = Math.max(req.limit ?? 100, 1);
+        const stream = mockCanvasRevisions.get(req.channelId) ?? [];
+        // Keyset over the newest-first stream: strictly older than the
+        // composite cursor, preserving (created_at DESC, id ASC) so a tied
+        // second never skips or repeats a revision across a page boundary.
+        const until = req.until;
+        const beforeId = req.beforeId;
+        const windowed =
+          until == null
+            ? stream
+            : stream.filter((rev) => {
+                if (rev.createdAt < until) return true;
+                if (rev.createdAt > until) return false;
+                return beforeId != null && rev.eventId > beforeId;
+              });
+        const page = windowed.slice(0, pageSize);
+        const nextCursor =
+          page.length === pageSize && page.length > 0
+            ? {
+                created_at: page[page.length - 1].createdAt,
+                event_id: page[page.length - 1].eventId,
+              }
+            : null;
+        return {
+          revisions: page.map((rev) => ({
+            event_id: rev.eventId,
+            content: rev.content,
+            created_at: rev.createdAt,
+            author: rev.author,
+          })),
+          next_cursor: nextCursor,
+        };
       }
       // ── Local-save archive ──────────────────────────────────────────────
       // These stubs drive the LocalArchiveSettingsCard in screenshot / UI tests
