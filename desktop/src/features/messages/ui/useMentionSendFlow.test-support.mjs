@@ -160,7 +160,7 @@ export async function setup({ lifecycle = false } = {}) {
         supersedesTags: [],
       }),
     },
-    "@/shared/api/tauri": { invokeTauri: async () => {} },
+    "@/shared/api/tauriChannels": { syncAgentsToActiveHuddle: async () => {} },
     "@/shared/lib/pubkey": {
       normalizePubkey: (key) => key.toLowerCase(),
       truncatePubkey: (key) => key,

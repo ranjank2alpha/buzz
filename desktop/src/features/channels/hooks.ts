@@ -19,7 +19,6 @@ import {
   joinChannel,
   leaveChannel,
   openDm,
-  invokeTauri,
   removeChannelMember,
   setChannelPurpose,
   setPinnedMessages,
@@ -36,9 +35,10 @@ import type {
   SetChannelTopicInput,
   UpdateChannelInput,
 } from "@/shared/api/types";
-import type {
-  GetChannelsPayload,
-  OpenDmInput,
+import {
+  syncAgentsToActiveHuddle,
+  type GetChannelsPayload,
+  type OpenDmInput,
 } from "@/shared/api/tauriChannels";
 import { mergeConcurrentChannelRecency } from "@/features/channels/lib/channelRecencyMerge";
 import { useIdentityQuery } from "@/shared/api/hooks";
@@ -847,12 +847,11 @@ export function useAddChannelMembersMutation(channelId: string | null) {
         variables.role === "bot" &&
         result.added.length > 0
       ) {
-        void invokeTauri("sync_agents_to_active_huddle", {
-          channelId: effectiveChannelId,
-          agentPubkeys: result.added,
-        }).catch((error) => {
-          console.warn("Could not sync added agents into Huddle:", error);
-        });
+        void syncAgentsToActiveHuddle(effectiveChannelId, result.added).catch(
+          (error) => {
+            console.warn("Could not sync added agents into Huddle:", error);
+          },
+        );
       }
     },
     onSettled: async (_data, _err, variables) => {

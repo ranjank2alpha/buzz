@@ -268,6 +268,15 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Your Windows notifications, Google Drive uploads, enriched file picker, and in-app document viewer are unchanged",
     ],
   },
+  {
+    version: "0.5.27-1",
+    date: "2026-10-08",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.27: inline images in messages now scale to fit instead of overflowing, and a channel's details stay correct right after you change them",
+      "Agent improvements: pick a Claude effort level when creating or editing an agent, clearer Claude Code model names, and summarized agent thinking",
+      "Your Windows notifications, Google Drive uploads, pinned messages, enriched file picker, and in-app document viewer are unchanged",
+    ],
+  },
 ];
 
 /**
