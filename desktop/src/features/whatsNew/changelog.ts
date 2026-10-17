@@ -277,6 +277,14 @@ export const WHATS_NEW_CHANGELOG: ChangelogEntry[] = [
       "Your Windows notifications, Google Drive uploads, pinned messages, enriched file picker, and in-app document viewer are unchanged",
     ],
   },
+  {
+    version: "0.5.28-1",
+    date: "2026-10-17",
+    bullets: [
+      "Caught up to upstream Buzz 0.5.28: Windows notification permissions are no longer wrongly reported as blocked, and community admins can browse and moderate every community from the Admin Console",
+      "Your Windows notifications, Google Drive uploads, pinned messages, enriched file picker, and in-app document viewer are unchanged",
+    ],
+  },
 ];
 
 /**

@@ -92,6 +92,8 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
     "moderation_actions",
     "moderation_reports",
     "parameterized_event_watermarks",
+    "personal_read_accounts",
+    "personal_read_frontiers",
     "pubkey_allowlist",
     "push_leases",
     "push_match_queue",
@@ -110,6 +112,8 @@ pub const EXPECTED_SCOPED_TABLES: &[&str] = &[
 
 /// Foreign-key-safe child-before-parent order for the PostgreSQL purge.
 pub const PURGE_SCOPED_TABLES: &[&str] = &[
+    "personal_read_frontiers",
+    "personal_read_accounts",
     "workflow_approvals",
     "scheduled_workflow_fires",
     "workflow_runs",
@@ -6981,7 +6985,7 @@ mod postgres_tests {
         .bind(request.community_id.as_uuid())
         .bind(pubkey.to_vec())
         .bind("during")
-        .execute(&mut *admitted_writer)
+        .execute(admitted_writer.conn())
         .await
         .expect("update allowlist note")
         .rows_affected();
@@ -8065,10 +8069,7 @@ mod postgres_tests {
         let (base_prefix, _) = base_url.rsplit_once('/').expect("database url has a path");
         let probe_url = format!("{base_prefix}/{probe_db}");
 
-        let schema_sql = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schema/schema.sql"),
-        )
-        .expect("read schema/schema.sql");
+        let schema_sql = crate::test_support::desired_state_schema_sql();
         let bootstrap = PgPool::connect(&probe_url)
             .await
             .expect("connect probe database");

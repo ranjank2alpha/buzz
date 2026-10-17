@@ -172,6 +172,25 @@ export async function getDesktopNotificationPermissionState(): Promise<DesktopNo
   }
 
   if (window.Notification.permission !== "default") {
+    // On Windows the notification plugin's injected shim stamps `denied` at
+    // startup without ever consulting the backend — `permission_state()`
+    // returns `Granted` unconditionally on desktop — so a `denied` reading
+    // inside the Windows Tauri app is never a real denial. Repair it by
+    // requesting once: on Windows `request_permission()` raises no prompt,
+    // returns `Granted`, and rewrites the shim's cached value, so subsequent
+    // reads short-circuit here as `granted`.
+    if (
+      window.Notification.permission === "denied" &&
+      isTauri() &&
+      isWindowsPlatform()
+    ) {
+      try {
+        return await requestDesktopNotificationAccess();
+      } catch {
+        return window.Notification.permission;
+      }
+    }
+
     return window.Notification.permission;
   }
 

@@ -31,12 +31,13 @@ pub mod error;
 mod test_support;
 
 pub use runtime::{
-    insert_mentions, migration, replica_fence, Db, DbConfig, DbConnectionOutcome, DbConnectionStep,
-    DbPoolRole, DbPoolStats, DbReadinessOutcome, ReadSession,
+    insert_mentions, migration, replica_fence, AdmittedTx, ColdStartError, Db, DbConfig,
+    DbConnectionOutcome, DbConnectionStep, DbPoolRole, DbPoolStats, DbReadinessOutcome,
+    ReadSession,
 };
 
 /// Valid low-cardinality `(pool_role, operation)` pairs for pool-acquisition telemetry.
-pub const DB_POOL_ACQUIRE_VALID_PAIRS: [(&str, &str); 11] =
+pub const DB_POOL_ACQUIRE_VALID_PAIRS: [(&str, &str); 12] =
     runtime::observability::POOL_ACQUIRE_VALID_PAIRS;
 
 /// Raw Prometheus series ceiling per relay pod for the operation-aware contract.
@@ -65,9 +66,9 @@ pub(crate) use runtime::{
 pub use store::{
     admin_moderation, allowlist, api_token, archived_identities, artifact, channel,
     channel_members, community, deletion, dm, event, feed, git_repo, moderation, operator_listener,
-    partition, product_feedback, push, reaction, read_state, relay_admin_actions, relay_invite,
-    relay_members, relay_operators, reminder, replaceable, storage_accounting, thread,
-    thread_window, usage, user, workflow,
+    partition, personal_read, product_feedback, push, reaction, read_state, relay_admin_actions,
+    relay_invite, relay_members, relay_operators, reminder, replaceable, storage_accounting,
+    thread, thread_window, usage, user, workflow,
 };
 
 pub use allowlist::AllowlistEntry;

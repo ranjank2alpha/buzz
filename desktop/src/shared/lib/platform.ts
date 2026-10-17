@@ -29,7 +29,7 @@ export function isWindowsPlatform(): boolean {
     return false;
   }
 
-  return /win/i.test(navigator.platform);
+  return /^win/i.test(navigator.platform);
 }
 
 /**
